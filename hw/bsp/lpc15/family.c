@@ -24,6 +24,10 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   manufacturer: NXP
+*/
+
 #ifdef __GNUC__
   #pragma GCC diagnostic push
   #pragma GCC diagnostic ignored "-Wstrict-prototypes"
@@ -73,10 +77,12 @@ void board_init(void)
 {
   SystemCoreClockUpdate();
 
+#if CFG_TUSB_OS == OPT_OS_NONE
   // 1ms tick timer
   SysTick_Config(SystemCoreClock / 1000);
-
-#if CFG_TUSB_OS == OPT_OS_FREERTOS
+#elif CFG_TUSB_OS == OPT_OS_FREERTOS
+  // Explicitly disable systick to prevent its ISR from running before scheduler start
+  SysTick->CTRL &= ~1U;
   // If freeRTOS is used, IRQ priority is limit by max syscall ( smaller is higher )
   NVIC_SetPriority(USB0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY );
 #endif
@@ -116,6 +122,19 @@ uint32_t board_button_read(void)
   return Chip_GPIO_GetPinState(LPC_GPIO, BUTTON_PORT, BUTTON_PIN) ? 0 : 1;
 }
 
+size_t board_get_unique_id(uint8_t id[], size_t max_len)
+{
+  // IAP ReadUID (cmd 58) returns status + 4 words = full 128-bit UID
+  unsigned int command[5] = { IAP_READ_UID_CMD, 0, 0, 0, 0 };
+  unsigned int result[5];
+  iap_entry(command, result);
+  TU_ASSERT(result[0] == IAP_CMD_SUCCESS, 0);
+
+  size_t const len = tu_min32(max_len, 16);
+  memcpy(id, &result[1], len);
+  return len;
+}
+
 int board_uart_read(uint8_t* buf, int len)
 {
   (void) buf; (void) len;
@@ -124,7 +143,17 @@ int board_uart_read(uint8_t* buf, int len)
 
 int board_uart_write(void const * buf, int len)
 {
-  return Chip_UART_SendBlocking(UART_PORT, buf, len);
+  uint8_t const *p = (uint8_t const *) buf;
+  int count = 0;
+  while (count < len) {
+    if (Chip_UART_GetStatus(UART_PORT) & UART_STAT_TXRDY) {
+      Chip_UART_SendByte(UART_PORT, p[count]);
+      count++;
+    } else {
+      break;
+    }
+  }
+  return count;
 }
 
 #if CFG_TUSB_OS == OPT_OS_NONE
@@ -134,7 +163,7 @@ void SysTick_Handler (void)
   system_ticks++;
 }
 
-uint32_t board_millis(void)
+uint32_t tusb_time_millis_api(void)
 {
   return system_ticks;
 }

@@ -1,31 +1,12 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
 
-#ifndef _TUSB_HCD_H_
-#define _TUSB_HCD_H_
+#ifndef TUSB_HCD_H_
+#define TUSB_HCD_H_
 
 #include "common/tusb_common.h"
 #include "osal/osal.h"
@@ -53,31 +34,25 @@
 //--------------------------------------------------------------------+
 // MACRO CONSTANT TYPEDEF
 //--------------------------------------------------------------------+
-typedef enum
-{
+typedef enum {
   HCD_EVENT_DEVICE_ATTACH,
   HCD_EVENT_DEVICE_REMOVE,
   HCD_EVENT_XFER_COMPLETE,
 
-  // Not an HCD event, just a convenient way to defer ISR function
-  USBH_EVENT_FUNC_CALL,
-
-  HCD_EVENT_COUNT
+  USBH_EVENT_FUNC_CALL, // Not an HCD event
+  HCD_EVENT_INVALID
 } hcd_eventid_t;
 
-typedef struct
-{
+typedef struct {
   uint8_t rhport;
   uint8_t event_id;
   uint8_t dev_addr;
 
-  union
-  {
+  union {
     // Attach, Remove
     struct {
       uint8_t hub_addr;
       uint8_t hub_port;
-      uint8_t speed;
     } connection;
 
     // XFER_COMPLETE
@@ -89,20 +64,11 @@ typedef struct
 
     // FUNC_CALL
     struct {
-      void (*func) (void*);
+      void (*func) (void* param);
       void* param;
     }func_call;
   };
-
 } hcd_event_t;
-
-typedef struct
-{
-  uint8_t rhport;
-  uint8_t hub_addr;
-  uint8_t hub_port;
-  uint8_t speed;
-} hcd_devtree_info_t;
 
 //--------------------------------------------------------------------+
 // Memory API
@@ -110,15 +76,15 @@ typedef struct
 
 // clean/flush data cache: write cache -> memory.
 // Required before an DMA TX transfer to make sure data is in memory
-bool hcd_dcache_clean(void const* addr, uint32_t data_size) TU_ATTR_WEAK;
+bool hcd_dcache_clean(void const* addr, uint32_t data_size);
 
 // invalidate data cache: mark cache as invalid, next read will read from memory
 // Required BOTH before and after an DMA RX transfer
-bool hcd_dcache_invalidate(void const* addr, uint32_t data_size) TU_ATTR_WEAK;
+bool hcd_dcache_invalidate(void const* addr, uint32_t data_size);
 
 // clean and invalidate data cache
 // Required before an DMA transfer where memory is both read/write by DMA
-bool hcd_dcache_clean_invalidate(void const* addr, uint32_t data_size) TU_ATTR_WEAK;
+bool hcd_dcache_clean_invalidate(void const* addr, uint32_t data_size);
 
 //--------------------------------------------------------------------+
 // Controller API
@@ -128,7 +94,7 @@ bool hcd_dcache_clean_invalidate(void const* addr, uint32_t data_size) TU_ATTR_W
 bool hcd_configure(uint8_t rhport, uint32_t cfg_id, const void* cfg_param);
 
 // Initialize controller to host mode
-bool hcd_init(uint8_t rhport);
+bool hcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init);
 
 // De-initialize controller
 bool hcd_deinit(uint8_t rhport);
@@ -170,7 +136,11 @@ void hcd_device_close(uint8_t rhport, uint8_t dev_addr);
 //--------------------------------------------------------------------+
 
 // Open an endpoint
+// return true if successfully opened or endpoint is currently opened
 bool hcd_edpt_open(uint8_t rhport, uint8_t daddr, tusb_desc_endpoint_t const * ep_desc);
+
+// Close an endpoint
+bool hcd_edpt_close(uint8_t rhport, uint8_t daddr, uint8_t ep_addr);
 
 // Submit a transfer, when complete hcd_event_xfer_complete() must be invoked
 bool hcd_edpt_xfer(uint8_t rhport, uint8_t daddr, uint8_t ep_addr, uint8_t * buffer, uint16_t buflen);
@@ -188,13 +158,6 @@ bool hcd_edpt_clear_stall(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr);
 //--------------------------------------------------------------------+
 // USBH implemented API
 //--------------------------------------------------------------------+
-
-// Get device tree information of a device
-// USB device tree can be complicated and manged by USBH, this help HCD to retrieve
-// needed topology info to carry out its work
-extern void hcd_devtree_get_info(uint8_t dev_addr, hcd_devtree_info_t* devtree_info);
-
-//------------- Event API -------------//
 
 // Called by HCD to notify stack
 extern void hcd_event_handler(hcd_event_t const* event, bool in_isr);
@@ -242,4 +205,4 @@ void hcd_event_xfer_complete(uint8_t dev_addr, uint8_t ep_addr, uint32_t xferred
  }
 #endif
 
-#endif /* _TUSB_HCD_H_ */
+#endif

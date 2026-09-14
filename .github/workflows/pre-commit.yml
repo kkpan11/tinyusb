@@ -20,19 +20,24 @@ jobs:
         ruby-version: '3.0'
 
     - name: Checkout TinyUSB
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Get Dependencies
       run: |
-        gem install ceedling
+        # pinned: 1.1.0 breaks mock preprocessing on this project ("Failed to read
+        # _build/test/preprocess/.../raw/*.h for comment stripping"); revisit on next release
+        gem install ceedling -v 1.0.1
         #cd test/unit-test
         #ceedling test:all
 
+    # runs --all-files, so the hil-test hook fires here regardless of its `files:` scope
     - name: Run pre-commit
-      uses: pre-commit/action@v3.0.0
+      uses: pre-commit/action@v3.0.1
 
     - name: Build Fuzzer
       run: |
+        sudo apt install libc++-dev libc++abi-dev
+        clang --version
         export CC=clang
         export CXX=clang++
         fuzz_harness=$(ls -d test/fuzz/device/*/)

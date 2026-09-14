@@ -1,5 +1,4 @@
 SDK_DIR = hw/mcu/nxp/mcux-sdk
-DEPS_SUBMODULES += $(SDK_DIR) lib/CMSIS_5
 
 MCU_DIR = $(SDK_DIR)/devices/$(MCU)
 include $(TOP)/$(BOARD_PATH)/board.mk
@@ -10,14 +9,16 @@ CFLAGS += \
   -DCFG_TUSB_MCU=OPT_MCU_KINETIS_KL \
 
 LDFLAGS += \
-  -nostartfiles \
-  -specs=nosys.specs -specs=nano.specs \
   -Wl,--defsym,__stack_size__=0x400 \
   -Wl,--defsym,__heap_size__=0
 
+LDFLAGS += \
+  -nostartfiles \
+  -specs=nosys.specs -specs=nano.specs \
+
 SRC_C += \
-	src/portable/nxp/khci/dcd_khci.c \
-	src/portable/nxp/khci/hcd_khci.c \
+	src/portable/chipidea/ci_fs/dcd_ci_fs.c \
+	src/portable/chipidea/ci_fs/hcd_ci_fs.c \
 	$(MCU_DIR)/system_$(MCU).c \
 	$(MCU_DIR)/drivers/fsl_clock.c \
 	$(SDK_DIR)/drivers/gpio/fsl_gpio.c \

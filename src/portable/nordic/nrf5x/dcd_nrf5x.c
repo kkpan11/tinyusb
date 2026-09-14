@@ -1,25 +1,6 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -36,11 +17,13 @@
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic ignored "-Wcast-align"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #endif
 
 #include "nrf.h"
-#include "nrf_clock.h"
-#include "nrfx_usbd_errata.h"
+#include "nrfx_clock.h"
+#include "nrf_erratas.h"
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -59,21 +42,26 @@
 /* Try to detect nrfx version if not configured with CFG_TUD_NRF_NRFX_VERSION
  * nrfx v1 and v2 are concurrently developed. There is no NRFX_VERSION only MDK VERSION which is as follows:
  * - v3.0.0: 8.53.1 (conflict with v2.11.0), v3.1.0: 8.55.0 ...
- * - v2.11.0: 8.53.1, v2.6.0: 8.44.1, v2.5.0: 8.40.2, v2.4.0: 8.37.0, v2.3.0: 8.35.0, v2.2.0: 8.32.1, v2.1.0: 8.30.2, v2.0.0: 8.29.0
+ * - v2.11.0: 8.53.1, v2.6.0: 8.44.1, v2.5.0: 8.40.2, v2.4.0: 8.37.0, v2.3.0: 8.35.0, v2.2.0: 8.32.1, v2.1.0: 8.30.2,
+ * v2.0.0: 8.29.0
  * - v1.9.0: 8.40.3, v1.8.6: 8.35.0 (conflict with v2.3.0), v1.8.5: 8.32.3, v1.8.4: 8.32.1 (conflict with v2.2.0),
  *   v1.8.2: 8.32.1 (conflict with v2.2.0), v1.8.1: 8.27.1
  * Therefore the check for v1 would be:
  * - MDK < 8.29.0 (v2.0), MDK == 8.32.3, 8.40.3
  * - in case of conflict User of those version must upgrade to other 1.x version or set CFG_TUD_NRF_NRFX_VERSION
-*/
+ */
 #ifndef CFG_TUD_NRF_NRFX_VERSION
-  #define _MDK_VERSION  (10000*MDK_MAJOR_VERSION + 100*MDK_MINOR_VERSION + MDK_MICRO_VERSION)
+  #define MDK_VERSION (10000 * MDK_MAJOR_VERSION + 100 * MDK_MINOR_VERSION + MDK_MICRO_VERSION)
 
-  #if _MDK_VERSION < 82900 || _MDK_VERSION == 83203 || _MDK_VERSION == 84003
+  #if MDK_VERSION < 82900 || MDK_VERSION == 83203 || MDK_VERSION == 84003
     // nrfx <= 1.8.1, or 1.8.5 or 1.9.0
     #define CFG_TUD_NRF_NRFX_VERSION 1
-  #else
+  #elif MDK_VERSION < 85301
     #define CFG_TUD_NRF_NRFX_VERSION 2
+  #elif MDK_VERSION < 87300
+    #define CFG_TUD_NRF_NRFX_VERSION 3
+  #else
+    #define CFG_TUD_NRF_NRFX_VERSION 4
   #endif
 #endif
 
@@ -134,8 +122,22 @@ TU_ATTR_ALWAYS_INLINE static inline bool is_in_isr(void) {
   return (SCB->ICSR & SCB_ICSR_VECTACTIVE_Msk) ? true : false;
 }
 
+// Errata 199 "USBD cannot receive tasks during DMA": while an EasyDMA transfer is in progress the
+// controller may drop an incoming SETUP/IN/OUT token (lost event -> stuck EP0, esp. under rapid
+// back-to-back control transfers). The workaround latches an undocumented "DMA in progress" test
+// register (0x40027C1C) so tokens are held instead. Gated on the anomaly being present (all
+// nRF52840 revisions; absent on other nRF52 parts). Mirrors nrfx usbd_dma_pending_set/clear().
+#define NRF_USBD_ERRATA_199_REG (*((volatile uint32_t*) 0x40027C1CUL))
+
 // helper to start DMA
 static void start_dma(volatile uint32_t* reg_startep) {
+  // EP0STATUS / EP0RCVOUT take the EasyDMA slot but do not transfer data, so no ERRATA-199 latch.
+  const bool no_dma = (reg_startep == &NRF_USBD->TASKS_EP0STATUS) || (reg_startep == &NRF_USBD->TASKS_EP0RCVOUT);
+
+  if (!no_dma && nrf52_errata_199()) {
+    NRF_USBD_ERRATA_199_REG = 0x00000082UL;
+  }
+
   (*reg_startep) = 1;
   __ISB();
   __DSB();
@@ -143,7 +145,7 @@ static void start_dma(volatile uint32_t* reg_startep) {
   // TASKS_EP0STATUS, TASKS_EP0RCVOUT seem to need EasyDMA to be available
   // However these don't trigger any DMA transfer and got ENDED event subsequently
   // Therefore dma_pending is corrected right away
-  if ((reg_startep == &NRF_USBD->TASKS_EP0STATUS) || (reg_startep == &NRF_USBD->TASKS_EP0RCVOUT)) {
+  if (no_dma) {
     atomic_flag_clear(&_dcd.dma_running);
   }
 }
@@ -158,6 +160,10 @@ static void edpt_dma_start(volatile uint32_t* reg_startep) {
 
 // DMA is complete
 static void edpt_dma_end(void) {
+  // Clear the ERRATA-199 "DMA in progress" latch set in start_dma().
+  if (nrf52_errata_199()) {
+    NRF_USBD_ERRATA_199_REG = 0x00000000UL;
+  }
   atomic_flag_clear(&_dcd.dma_running);
 }
 
@@ -230,9 +236,11 @@ static void xact_in_dma(uint8_t epnum) {
 //--------------------------------------------------------------------+
 // Controller API
 //--------------------------------------------------------------------+
-void dcd_init(uint8_t rhport) {
-  TU_LOG2("dcd init\r\n");
+bool dcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   (void) rhport;
+  (void) rh_init;
+  TU_LOG2("dcd init\r\n");
+  return true;
 }
 
 void dcd_int_enable(uint8_t rhport) {
@@ -387,45 +395,55 @@ void dcd_edpt_close_all(uint8_t rhport) {
   dcd_int_enable(rhport);
 }
 
-void dcd_edpt_close(uint8_t rhport, uint8_t ep_addr) {
-  (void) rhport;
-
-  uint8_t const epnum = tu_edpt_number(ep_addr);
-  uint8_t const dir = tu_edpt_dir(ep_addr);
-
-  if (epnum != EP_ISO_NUM) {
-    // CBI
-    if (dir == TUSB_DIR_OUT) {
-      NRF_USBD->INTENCLR = TU_BIT(USBD_INTEN_ENDEPOUT0_Pos + epnum);
-      NRF_USBD->EPOUTEN &= ~TU_BIT(epnum);
-    } else {
-      NRF_USBD->INTENCLR = TU_BIT(USBD_INTEN_ENDEPIN0_Pos + epnum);
-      NRF_USBD->EPINEN &= ~TU_BIT(epnum);
-    }
-  } else {
-    _dcd.xfer[EP_ISO_NUM][dir].mps = 0;
-    // ISO
-    if (dir == TUSB_DIR_OUT) {
-      NRF_USBD->INTENCLR = USBD_INTENCLR_ENDISOOUT_Msk;
-      NRF_USBD->EPOUTEN &= ~USBD_EPOUTEN_ISOOUT_Msk;
-      NRF_USBD->EVENTS_ENDISOOUT = 0;
-    } else {
-      NRF_USBD->INTENCLR = USBD_INTENCLR_ENDISOIN_Msk;
-      NRF_USBD->EPINEN &= ~USBD_EPINEN_ISOIN_Msk;
-    }
-    // One of the ISO endpoints closed, no need to split buffers any more.
-    NRF_USBD->ISOSPLIT = USBD_ISOSPLIT_SPLIT_OneDir;
-    // When both ISO endpoint are close there is no need for SOF any more.
-    if (_dcd.xfer[EP_ISO_NUM][TUSB_DIR_IN].mps + _dcd.xfer[EP_ISO_NUM][TUSB_DIR_OUT].mps == 0)
-      NRF_USBD->INTENCLR = USBD_INTENCLR_SOF_Msk;
-  }
-  _dcd.xfer[epnum][dir].started = false;
-  __ISB();
-  __DSB();
+bool dcd_edpt_iso_alloc(uint8_t rhport, uint8_t ep_addr, uint16_t largest_packet_size) {
+  (void)rhport;
+  (void)largest_packet_size;
+  // nRF ISO endpoints are hardware-fixed to EP8 and use EasyDMA, so there is no packet buffer to
+  // pre-allocate here; the endpoint is enabled on dcd_edpt_iso_activate().
+  TU_ASSERT(tu_edpt_number(ep_addr) == EP_ISO_NUM);
+  return true;
 }
 
-bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t* buffer, uint16_t total_bytes) {
+bool dcd_edpt_iso_activate(uint8_t rhport, const tusb_desc_endpoint_t *desc_ep) {
+  (void)rhport;
+  uint8_t const ep_addr = desc_ep->bEndpointAddress;
+  uint8_t const epnum = tu_edpt_number(ep_addr);
+  uint8_t const dir = tu_edpt_dir(ep_addr);
+  TU_ASSERT(epnum == EP_ISO_NUM);
+
+  // A transfer armed before SET_INTERFACE survives to here (this port has no dcd close); usbd has
+  // just reset the endpoint's claim/busy state, so drop the stale descriptor too — otherwise the
+  // class's next arm trips TU_ASSERT(!xfer->started) in dcd_edpt_xfer().
+  _dcd.xfer[epnum][dir].started               = false;
+  _dcd.xfer[epnum][dir].data_received         = false;
+  _dcd.xfer[epnum][dir].iso_in_transfer_ready = false;
+
+  _dcd.xfer[epnum][dir].mps = tu_edpt_packet_size(desc_ep);
+
+  if (dir == TUSB_DIR_OUT) {
+    // SPLIT ISO buffer when the ISO IN endpoint is already active.
+    if (_dcd.xfer[EP_ISO_NUM][TUSB_DIR_IN].mps) NRF_USBD->ISOSPLIT = USBD_ISOSPLIT_SPLIT_HalfIN;
+    NRF_USBD->EVENTS_ENDISOOUT = 0;
+    if ((NRF_USBD->INTEN & USBD_INTEN_SOF_Msk) == 0) NRF_USBD->EVENTS_SOF = 0;
+    NRF_USBD->INTENSET = USBD_INTENSET_ENDISOOUT_Msk | USBD_INTENSET_SOF_Msk;
+    NRF_USBD->EPOUTEN |= USBD_EPOUTEN_ISOOUT_Msk;
+  } else {
+    NRF_USBD->EVENTS_ENDISOIN = 0;
+    // SPLIT ISO buffer when the ISO OUT endpoint is already active.
+    if (_dcd.xfer[EP_ISO_NUM][TUSB_DIR_OUT].mps) NRF_USBD->ISOSPLIT = USBD_ISOSPLIT_SPLIT_HalfIN;
+    if ((NRF_USBD->INTEN & USBD_INTEN_SOF_Msk) == 0) NRF_USBD->EVENTS_SOF = 0;
+    NRF_USBD->INTENSET = USBD_INTENSET_ENDISOIN_Msk | USBD_INTENSET_SOF_Msk;
+    NRF_USBD->EPINEN |= USBD_EPINEN_ISOIN_Msk;
+  }
+
+  __ISB();
+  __DSB();
+  return true;
+}
+
+bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t* buffer, uint16_t total_bytes, bool is_isr) {
   (void) rhport;
+  (void) is_isr;
 
   uint8_t const epnum = tu_edpt_number(ep_addr);
   uint8_t const dir = tu_edpt_dir(ep_addr);
@@ -438,14 +456,14 @@ bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t* buffer, uint16_t to
   xfer->actual_len = 0;
 
   // Control endpoint with zero-length packet and opposite direction to 1st request byte --> status stage
-  bool const control_status = (epnum == 0 && total_bytes == 0 && dir != tu_edpt_dir(NRF_USBD->BMREQUESTTYPE));
+  bool const control_status = (epnum == 0 && total_bytes == 0 && dir != tu_edpt_dir((uint8_t)NRF_USBD->BMREQUESTTYPE));
 
   if (control_status) {
-    // Status Phase also requires EasyDMA has to be available as well !!!!
-    edpt_dma_start(&NRF_USBD->TASKS_EP0STATUS);
-
     // The nRF doesn't interrupt on status transmit so we queue up a success response.
     dcd_event_xfer_complete(0, ep_addr, 0, XFER_RESULT_SUCCESS, is_in_isr());
+
+    // Status Phase also requires EasyDMA has to be available as well !!!!
+    edpt_dma_start(&NRF_USBD->TASKS_EP0STATUS);
   } else if (dir == TUSB_DIR_OUT) {
     xfer->started = true;
     if (epnum == 0) {
@@ -528,7 +546,7 @@ void dcd_edpt_clear_stall(uint8_t rhport, uint8_t ep_addr) {
 /*------------------------------------------------------------------*/
 /* Interrupt Handler
  *------------------------------------------------------------------*/
-void bus_reset(void) {
+static void bus_reset(void) {
   // 6.35.6 USB controller automatically disabled all endpoints (except control)
   NRF_USBD->EPOUTEN = 1UL;
   NRF_USBD->EPINEN = 1UL;
@@ -827,19 +845,23 @@ TU_ATTR_ALWAYS_INLINE static inline bool is_sd_enabled(void) {
 #endif
 
 static bool hfclk_running(void) {
-#ifdef SOFTDEVICE_PRESENT
-  if ( is_sd_enabled() ) {
+  #ifdef SOFTDEVICE_PRESENT
+  if (is_sd_enabled()) {
     uint32_t is_running = 0;
-    (void) sd_clock_hfclk_is_running(&is_running);
+    (void)sd_clock_hfclk_is_running(&is_running);
     return (is_running ? true : false);
   }
-#endif
+  #endif
 
-#if CFG_TUD_NRF_NRFX_VERSION == 1
+  #if CFG_TUD_NRF_NRFX_VERSION == 1
   return nrf_clock_hf_is_running(NRF_CLOCK_HFCLK_HIGH_ACCURACY);
-#else
+  #elif CFG_TUD_NRF_NRFX_VERSION == 2
+  // nrfx 2.0.0 (MDK 8.29.0) has no nrf_clock_is_running(); it arrived in 2.1.0.
+  // nrf_clock_hf_is_running() is present in all of 2.0.0-2.11.0 (deprecated from 2.1.0).
   return nrf_clock_hf_is_running(NRF_CLOCK, NRF_CLOCK_HFCLK_HIGH_ACCURACY);
-#endif
+  #else
+  return nrf_clock_is_running(NRF_CLOCK, NRF_CLOCK_DOMAIN_HFCLK, NULL);
+  #endif
 }
 
 static void hfclk_enable(void) {
@@ -849,22 +871,24 @@ static void hfclk_enable(void) {
 #else
 
   // already running, nothing to do
-  if (hfclk_running()) return;
+  if (hfclk_running()) {
+    return;
+  }
 
-#ifdef SOFTDEVICE_PRESENT
-  if ( is_sd_enabled() ) {
+  #ifdef SOFTDEVICE_PRESENT
+  if (is_sd_enabled()) {
     (void)sd_clock_hfclk_request();
     return;
   }
-#endif
+  #endif
 
-#if CFG_TUD_NRF_NRFX_VERSION == 1
+  #if CFG_TUD_NRF_NRFX_VERSION == 1
   nrf_clock_event_clear(NRF_CLOCK_EVENT_HFCLKSTARTED);
   nrf_clock_task_trigger(NRF_CLOCK_TASK_HFCLKSTART);
-#else
+  #else
   nrf_clock_event_clear(NRF_CLOCK, NRF_CLOCK_EVENT_HFCLKSTARTED);
   nrf_clock_task_trigger(NRF_CLOCK, NRF_CLOCK_TASK_HFCLKSTART);
-#endif
+  #endif
 #endif
 }
 
@@ -899,6 +923,7 @@ static void hfclk_disable(void) {
 // Therefore this function must be called to handle USB power event by
 // - nrfx_power_usbevt_init() : if Softdevice is not used or enabled
 // - SoftDevice SOC event : if SD is used and enabled
+void tusb_hal_nrf_power_event(uint32_t event);
 void tusb_hal_nrf_power_event(uint32_t event) {
   // Value is chosen to be as same as NRFX_POWER_USB_EVT_* in nrfx_power.h
   enum {
@@ -923,7 +948,7 @@ void tusb_hal_nrf_power_event(uint32_t event) {
 
 #ifdef NRF52_SERIES // NRF53 does not need this errata
         // ERRATA 171, 187, 166
-        if (nrfx_usbd_errata_187()) {
+        if (nrf52_errata_187()) {
           // CRITICAL_REGION_ENTER();
           if (*((volatile uint32_t*) (0x4006EC00)) == 0x00000000) {
             *((volatile uint32_t*) (0x4006EC00)) = 0x00009375;
@@ -935,7 +960,7 @@ void tusb_hal_nrf_power_event(uint32_t event) {
           // CRITICAL_REGION_EXIT();
         }
 
-        if (nrfx_usbd_errata_171()) {
+        if (nrf52_errata_171()) {
           // CRITICAL_REGION_ENTER();
           if (*((volatile uint32_t*) (0x4006EC00)) == 0x00000000) {
             *((volatile uint32_t*) (0x4006EC00)) = 0x00009375;
@@ -971,7 +996,7 @@ void tusb_hal_nrf_power_event(uint32_t event) {
       __DSB(); // for sync
 
 #ifdef NRF52_SERIES
-      if (nrfx_usbd_errata_171()) {
+      if (nrf52_errata_171()) {
         // CRITICAL_REGION_ENTER();
         if (*((volatile uint32_t*) (0x4006EC00)) == 0x00000000) {
           *((volatile uint32_t*) (0x4006EC00)) = 0x00009375;
@@ -984,7 +1009,7 @@ void tusb_hal_nrf_power_event(uint32_t event) {
         // CRITICAL_REGION_EXIT();
       }
 
-      if (nrfx_usbd_errata_187()) {
+      if (nrf52_errata_187()) {
         // CRITICAL_REGION_ENTER();
         if (*((volatile uint32_t*) (0x4006EC00)) == 0x00000000) {
           *((volatile uint32_t*) (0x4006EC00)) = 0x00009375;
@@ -996,7 +1021,7 @@ void tusb_hal_nrf_power_event(uint32_t event) {
         // CRITICAL_REGION_EXIT();
       }
 
-      if (nrfx_usbd_errata_166()) {
+      if (nrf52_errata_166()) {
         *((volatile uint32_t*) (NRF_USBD_BASE + 0x800)) = 0x7E3;
         *((volatile uint32_t*) (NRF_USBD_BASE + 0x804)) = 0x40;
 
@@ -1020,6 +1045,12 @@ void tusb_hal_nrf_power_event(uint32_t event) {
       if (tud_inited()) {
         NVIC_EnableIRQ(USBD_IRQn);
       }
+
+      // Ensure HFCLK is requested in the current context. The hfclk_enable() in
+      // USB_EVT_DETECTED may have been pre-SoftDevice. After Softdevice is
+      // enabled, HFXO is physically off again. So any caller that fires
+      // USB_EVT_READY post-SD would hang here.
+      hfclk_enable();
 
       // Wait for HFCLK
       while (!hfclk_running()) {}
@@ -1059,5 +1090,4 @@ void tusb_hal_nrf_power_event(uint32_t event) {
       break;
   }
 }
-
 #endif

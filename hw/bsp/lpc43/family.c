@@ -24,6 +24,10 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   manufacturer: NXP
+*/
+
 // Suppress warning caused by mcu driver
 #ifdef __GNUC__
 #pragma GCC diagnostic push
@@ -39,21 +43,14 @@
 #include "bsp/board_api.h"
 #include "board.h"
 
-#ifdef BOARD_TUD_RHPORT
-  #define PORT_SUPPORT_DEVICE(_n)  (BOARD_TUD_RHPORT == _n)
-#else
-  #define PORT_SUPPORT_DEVICE(_n)  0
-#endif
-
-#ifdef BOARD_TUH_RHPORT
-  #define PORT_SUPPORT_HOST(_n)    (BOARD_TUH_RHPORT == _n)
-#else
-  #define PORT_SUPPORT_HOST(_n)    0
-#endif
-
 /* System configuration variables used by chip driver */
 const uint32_t OscRateIn = 12000000;
 const uint32_t ExtRateIn = 0;
+
+extern void USB0_IRQHandler(void);
+extern void USB1_IRQHandler(void);
+extern void SysTick_Handler(void);
+void SystemInit(void);
 
 /*------------------------------------------------------------------*/
 /* BOARD API
@@ -62,6 +59,30 @@ const uint32_t ExtRateIn = 0;
 // Invoked by startup code
 void SystemInit(void)
 {
+#if defined(__ICCARM__) && !defined(DONT_RESET_ON_RESTART)
+  __disable_irq();
+#endif
+
+  if (Chip_CREG_OnChipFlashIsPresent()) {
+    // The boot ROM configures flash for its 96 MHz clock, and debugger core
+    // resets can preserve it. Use safe timing before switching the M4 to 204 MHz.
+    Chip_CREG_SetFLASHAccess(FLASHTIM_SAFE_SETTING);
+    __DSB();
+    __ISB();
+  }
+
+#if defined(__ICCARM__) && !defined(DONT_RESET_ON_RESTART)
+  // A debugger restart resets the M4 core, but can leave LPC43 peripherals and
+  // pending interrupts active. Match the GCC startup sequence, which the IAR
+  // startup lacks, before the C runtime can reuse peripheral DMA memory.
+  LPC_RGU->RESET_CTRL[0] = 0x10DF1000u;
+  LPC_RGU->RESET_CTRL[1] = 0x01DFF7FFu;
+  for (uint32_t i = 0; i < 8; i++) {
+    NVIC->ICPR[i] = UINT32_MAX;
+  }
+  __enable_irq();
+#endif
+
 #ifdef __USE_LPCOPEN
   unsigned int *pSCB_VTOR = (unsigned int *) 0xE000ED08;
 
@@ -92,7 +113,13 @@ void SystemInit(void)
 //    Chip_SCU_ClockPinMuxSet(pinclockmuxing[i].pinnum, pinclockmuxing[i].modefunc);
 //  }
 
+#ifdef TRACE_ETM
+  // Trace clock is limited to 60MHz, limit CPU clock to 120MHz
+  Chip_SetupCoreClock(CLKIN_CRYSTAL, 120000000UL, true);
+  board_trace_pinmux(); // after clock setup so TRACECLK starts at its final frequency
+#else
   Chip_SetupXtalClocking();
+#endif
 }
 
 void board_init(void)
@@ -103,6 +130,8 @@ void board_init(void)
   // 1ms tick timer
   SysTick_Config(SystemCoreClock / 1000);
 #elif CFG_TUSB_OS == OPT_OS_FREERTOS
+  // Explicitly disable systick to prevent its ISR from running before scheduler start
+  SysTick->CTRL &= ~1U;
   // If freeRTOS is used, IRQ priority is limit by max syscall ( smaller is higher )
   NVIC_SetPriority(USB0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
 #endif
@@ -161,9 +190,7 @@ void board_init(void)
    * - Insert jumpers in position 2-3 in JP17/JP18/JP19
    * - Insert jumpers in JP31 (OTG)
    */
-#if PORT_SUPPORT_DEVICE(0) || PORT_SUPPORT_HOST(0)
   Chip_USB0_Init();
-#endif
 
   /* From EA4357 user manual
    *
@@ -186,17 +213,17 @@ void board_init(void)
    * - LED34 lights green when +5V is available on J20.
    * - JP15 shall not be inserted. JP16 has no effect
    */
-#if PORT_SUPPORT_DEVICE(1) || PORT_SUPPORT_HOST(1)
   Chip_USB1_Init();
-#endif
 
+#ifdef _BOARD_EA4357_H
   // USB0 Vbus Power: P2_3 on EA4357 channel B U20 GPIO26 active low (base board)
   Chip_SCU_PinMuxSet(2, 3, SCU_MODE_PULLUP | SCU_MODE_INBUFF_EN | SCU_MODE_FUNC7);
+#endif
 
-  #if PORT_SUPPORT_DEVICE(0)
-  // P9_5 (GPIO5[18]) (GPIO28 on oem base) as USB connect, active low.
-  Chip_SCU_PinMuxSet(9, 5, SCU_MODE_PULLDOWN | SCU_MODE_FUNC4);
-  Chip_GPIO_SetPinDIROutput(LPC_GPIO_PORT, 5, 18);
+  #if defined(BOARD_TUD_RHPORT) &&  BOARD_TUD_RHPORT == 0
+    // P9_5 (GPIO5[18]) (GPIO28 on oem base) as USB connect, active low.
+    Chip_SCU_PinMuxSet(9, 5, SCU_MODE_PULLDOWN | SCU_MODE_FUNC4);
+    Chip_GPIO_SetPinDIROutput(LPC_GPIO_PORT, 5, 18);
   #endif
 
   // USB1 Power: EA4357 channel A U20 is enabled by SJ5 connected to pad 1-2, no more action required
@@ -206,26 +233,12 @@ void board_init(void)
 //--------------------------------------------------------------------+
 // USB Interrupt Handler
 //--------------------------------------------------------------------+
-void USB0_IRQHandler(void)
-{
-  #if PORT_SUPPORT_DEVICE(0)
-    tud_int_handler(0);
-  #endif
-
-  #if PORT_SUPPORT_HOST(0)
-    tuh_int_handler(0, true);
-  #endif
+void USB0_IRQHandler(void) {
+  tusb_int_handler(0, true);
 }
 
-void USB1_IRQHandler(void)
-{
-  #if PORT_SUPPORT_DEVICE(1)
-    tud_int_handler(1);
-  #endif
-
-  #if PORT_SUPPORT_HOST(1)
-    tuh_int_handler(1, true);
-  #endif
+void USB1_IRQHandler(void) {
+  tusb_int_handler(1, true);
 }
 
 //--------------------------------------------------------------------+
@@ -261,12 +274,16 @@ int board_uart_read(uint8_t *buf, int len) {
 
 int board_uart_write(void const *buf, int len) {
   uint8_t const *buf8 = (uint8_t const *) buf;
-  for ( int i = 0; i < len; i++ ) {
-    while ( (Chip_UART_ReadLineStatus(UART_DEV) & UART_LSR_THRE) == 0 ) {}
-    Chip_UART_SendByte(UART_DEV, buf8[i]);
+  int count = 0;
+  while (count < len) {
+    if (Chip_UART_ReadLineStatus(UART_DEV) & UART_LSR_THRE) {
+      Chip_UART_SendByte(UART_DEV, buf8[count]);
+      count++;
+    } else {
+      break;
+    }
   }
-
-  return len;
+  return count;
 }
 
 #if CFG_TUSB_OS == OPT_OS_NONE
@@ -276,7 +293,7 @@ void SysTick_Handler(void) {
   system_ticks++;
 }
 
-uint32_t board_millis(void) {
+uint32_t tusb_time_millis_api(void) {
   return system_ticks;
 }
 

@@ -24,10 +24,15 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   manufacturer: WCH
+*/
+
 #include "stdio.h"
 #include "debug_uart.h"
 
 #include "ch32f20x.h"
+#include "ch32f20x_it.h"
 
 #include "bsp/board_api.h"
 #include "board.h"
@@ -96,7 +101,7 @@ void SysTick_Handler(void)
   system_ticks++;
 }
 
-uint32_t board_millis(void)
+uint32_t tusb_time_millis_api(void)
 {
   return system_ticks;
 }
@@ -131,11 +136,9 @@ int board_uart_read(uint8_t *buf, int len)
 
 int board_uart_write(void const *buf, int len)
 {
-  int txsize = len;
-  while ( txsize-- )
-  {
-    uart_write(*(uint8_t const*) buf);
-    buf++;
+  uint8_t const *p = (uint8_t const *) buf;
+  for (int i = 0; i < len; i++) {
+    uart_write(p[i]);
   }
   return len;
 }

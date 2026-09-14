@@ -1,31 +1,13 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2022 Rafael Silva (@perigoso)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2022 Rafael Silva (@perigoso)
+ * SPDX-FileCopyrightText: Copyright (c) 2022 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
 
-#ifndef _TUSB_RUSB2_TYPE_H_
-#define _TUSB_RUSB2_TYPE_H_
+#ifndef TUSB_RUSB2_TYPE_H_
+#define TUSB_RUSB2_TYPE_H_
 
 #include <stdint.h>
 #include <stddef.h>
@@ -41,10 +23,9 @@ extern "C" {
   #define _ccrx_evenaccess
 #endif
 
-/*--------------------------------------------------------------------*/
-/* Register Definitions                                           */
-/*--------------------------------------------------------------------*/
-
+//--------------------------------------------------------------------+
+// Register Definitions
+//--------------------------------------------------------------------+
 /* Start of definition of packed structs (used by the CCRX toolchain) */
 TU_ATTR_PACKED_BEGIN
 TU_ATTR_BIT_FIELD_ORDER_BEGIN
@@ -1669,14 +1650,19 @@ TU_ATTR_BIT_FIELD_ORDER_END
 /*--------------------------------------------------------------------*/
 /* Register Bit Utils                                           */
 /*--------------------------------------------------------------------*/
-#define RUSB2_PIPE_CTR_PID_NAK          (0U << RUSB2_PIPE_CTR_PID_Pos)    /* NAK response */
-#define RUSB2_PIPE_CTR_PID_BUF          (1U << RUSB2_PIPE_CTR_PID_Pos)    /* BUF response (depends buffer state) */
-#define RUSB2_PIPE_CTR_PID_STALL        (2U << RUSB2_PIPE_CTR_PID_Pos)    /* STALL response */
-#define RUSB2_PIPE_CTR_PID_STALL2       (3U << RUSB2_PIPE_CTR_PID_Pos)    /* Also STALL response */
+#define RUSB2_SYSSTS0_LNST_SE0          (0)
+#define RUSB2_SYSSTS0_LNST_FS_J         (1u << RUSB2_SYSSTS0_LNST_Pos)    /* Full-speed J state */
+#define RUSB2_SYSSTS0_LNST_FS_K         (2u << RUSB2_SYSSTS0_LNST_Pos)    /* Full-speed K state */
+#define RUSB2_SYSSTS0_LNST_LS_SE1       (3u << RUSB2_SYSSTS0_LNST_Pos)    /* Low-speed SE1 state */
 
 #define RUSB2_DVSTCTR0_RHST_LS          (1U << RUSB2_DVSTCTR0_RHST_Pos)   /*  Low-speed connection */
 #define RUSB2_DVSTCTR0_RHST_FS          (2U << RUSB2_DVSTCTR0_RHST_Pos)   /*  Full-speed connection */
 #define RUSB2_DVSTCTR0_RHST_HS          (3U << RUSB2_DVSTCTR0_RHST_Pos)   /*  Full-speed connection */
+
+#define RUSB2_PIPE_CTR_PID_NAK          (0U << RUSB2_PIPE_CTR_PID_Pos)    /* NAK response */
+#define RUSB2_PIPE_CTR_PID_BUF          (1U << RUSB2_PIPE_CTR_PID_Pos)    /* BUF response (depends buffer state) */
+#define RUSB2_PIPE_CTR_PID_STALL        (2U << RUSB2_PIPE_CTR_PID_Pos)    /* STALL response */
+#define RUSB2_PIPE_CTR_PID_STALL2       (3U << RUSB2_PIPE_CTR_PID_Pos)    /* Also STALL response */
 
 #define RUSB2_DEVADD_USBSPD_LS          (1U << RUSB2_DEVADD_USBSPD_Pos)   /* Target Device Low-speed */
 #define RUSB2_DEVADD_USBSPD_FS          (2U << RUSB2_DEVADD_USBSPD_Pos)   /* Target Device Full-speed */
@@ -1777,4 +1763,4 @@ TU_VERIFY_STATIC(offsetof(rusb2_reg_t, DPUSR1R_FS ) == 0x0404, "incorrect offset
 }
 #endif
 
-#endif /* _TUSB_RUSB2_TYPE_H_ */
+#endif /* TUSB_RUSB2_TYPE_H_ */

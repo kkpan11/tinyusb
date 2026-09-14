@@ -27,15 +27,8 @@
 #include "tusb.h"
 #include "usb_descriptors.h"
 
-/* A combination of interfaces must have a unique product id, since PC will save device driver after the first plug.
- * Same VID/PID with different interface e.g MSC (first), then CDC (later) will possibly cause system error on PC.
- *
- * Auto ProductID layout's Bitmap:
- *   [MSB]  VIDEO | AUDIO | MIDI | HID | MSC | CDC          [LSB]
- */
-#define _PID_MAP(itf, n)  ( (CFG_TUD_##itf) << (n) )
-#define USB_PID           (0x4000 | _PID_MAP(CDC, 0) | _PID_MAP(MSC, 1) | _PID_MAP(HID, 2) | \
-    _PID_MAP(MIDI, 3) | _PID_MAP(AUDIO, 4) | _PID_MAP(VIDEO, 5) | _PID_MAP(VENDOR, 6) )
+// Unique PID per example: guarantees re-enumeration on re-flash and a fresh host driver match.
+#define USB_PID           0x401e
 
 #define USB_VID   0xCafe
 #define USB_BCD   0x0200
@@ -68,7 +61,7 @@ char const* string_desc_arr[] = {
 //--------------------------------------------------------------------+
 // Device Descriptors
 //--------------------------------------------------------------------+
-tusb_desc_device_t const desc_device = {
+static tusb_desc_device_t const desc_device = {
     .bLength            = sizeof(tusb_desc_device_t),
     .bDescriptorType    = TUSB_DESC_DEVICE,
     .bcdUSB             = USB_BCD,
@@ -117,8 +110,15 @@ enum {
   ITF_NUM_TOTAL
 };
 
-#define EPNUM_VIDEO_IN_1    0x81
-#define EPNUM_VIDEO_IN_2    0x82
+#if CFG_TUSB_MIMXRT1XXX_ERRATA_ERR050101 && !CFG_TUD_VIDEO_STREAMING_BULK
+  // ERR050101 (see CFG_TUSB_MIMXRT1XXX_ERRATA_ERR050101): an isochronous IN endpoint needs a number
+  // no other device on the bus uses
+  #define EPNUM_VIDEO_IN_1    0x86
+  #define EPNUM_VIDEO_IN_2    0x87
+#else
+  #define EPNUM_VIDEO_IN_1    0x81
+  #define EPNUM_VIDEO_IN_2    0x82
+#endif
 
 #if defined(CFG_EXAMPLE_VIDEO_READONLY) && !defined(CFG_EXAMPLE_VIDEO_DISABLE_MJPEG)
   #define USE_MJPEG 1
@@ -551,9 +551,9 @@ static uint8_t * get_hs_configuration_desc(void) {
 }
 
 // device qualifier is mostly similar to device descriptor since we don't change configuration based on speed
-tusb_desc_device_qualifier_t const desc_device_qualifier = {
-    .bLength            = sizeof(tusb_desc_device_t),
-    .bDescriptorType    = TUSB_DESC_DEVICE,
+static tusb_desc_device_qualifier_t const desc_device_qualifier = {
+    .bLength            = sizeof(tusb_desc_device_qualifier_t),
+    .bDescriptorType    = TUSB_DESC_DEVICE_QUALIFIER,
     .bcdUSB             = USB_BCD,
 
     .bDeviceClass       = TUSB_CLASS_MISC,

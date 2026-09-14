@@ -1,35 +1,14 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2018 Scott Shawcroft for Adafruit Industries
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2018 Scott Shawcroft for Adafruit Industries
+ * SPDX-FileCopyrightText: Copyright (c) 2018 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
 
 #include "tusb_option.h"
 
-#if CFG_TUD_ENABLED && \
-    (CFG_TUSB_MCU == OPT_MCU_SAMD11 || CFG_TUSB_MCU == OPT_MCU_SAMD21 || \
-     CFG_TUSB_MCU == OPT_MCU_SAMD51 || CFG_TUSB_MCU == OPT_MCU_SAME5X || \
-     CFG_TUSB_MCU == OPT_MCU_SAML22 || CFG_TUSB_MCU == OPT_MCU_SAML21)
+#if CFG_TUD_ENABLED && TU_CHECK_MCU(OPT_MCU_SAMD11, OPT_MCU_SAMD21, OPT_MCU_SAML2X, OPT_MCU_SAMD51, OPT_MCU_SAME5X)
 
 #include "sam.h"
 #include "device/dcd.h"
@@ -78,9 +57,9 @@ static void bus_reset(void)
 /*------------------------------------------------------------------*/
 /* Controller API
  *------------------------------------------------------------------*/
-void dcd_init (uint8_t rhport)
-{
+bool dcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   (void) rhport;
+  (void) rh_init;
 
   // Reset to get in a clean state.
   USB->DEVICE.CTRLA.bit.SWRST = true;
@@ -102,12 +81,12 @@ void dcd_init (uint8_t rhport)
 
   USB->DEVICE.INTFLAG.reg |= USB->DEVICE.INTFLAG.reg; // clear pending
   USB->DEVICE.INTENSET.reg = /* USB_DEVICE_INTENSET_SOF | */ USB_DEVICE_INTENSET_EORST;
+
+  return true;
 }
 
-#if CFG_TUSB_MCU == OPT_MCU_SAMD51 || CFG_TUSB_MCU == OPT_MCU_SAME5X
-
-void dcd_int_enable(uint8_t rhport)
-{
+#if TU_CHECK_MCU(OPT_MCU_SAMD51, OPT_MCU_SAME5X)
+void dcd_int_enable(uint8_t rhport) {
   (void) rhport;
   NVIC_EnableIRQ(USB_0_IRQn);
   NVIC_EnableIRQ(USB_1_IRQn);
@@ -115,8 +94,7 @@ void dcd_int_enable(uint8_t rhport)
   NVIC_EnableIRQ(USB_3_IRQn);
 }
 
-void dcd_int_disable(uint8_t rhport)
-{
+void dcd_int_disable(uint8_t rhport) {
   (void) rhport;
   NVIC_DisableIRQ(USB_3_IRQn);
   NVIC_DisableIRQ(USB_2_IRQn);
@@ -124,17 +102,13 @@ void dcd_int_disable(uint8_t rhport)
   NVIC_DisableIRQ(USB_0_IRQn);
 }
 
-#elif CFG_TUSB_MCU == OPT_MCU_SAMD11 || CFG_TUSB_MCU == OPT_MCU_SAMD21 || \
-      CFG_TUSB_MCU == OPT_MCU_SAML22 || CFG_TUSB_MCU == OPT_MCU_SAML21
-
-void dcd_int_enable(uint8_t rhport)
-{
+#elif TU_CHECK_MCU(OPT_MCU_SAMD11, OPT_MCU_SAMD21, OPT_MCU_SAML2X)
+void dcd_int_enable(uint8_t rhport) {
   (void) rhport;
   NVIC_EnableIRQ(USB_IRQn);
 }
 
-void dcd_int_disable(uint8_t rhport)
-{
+void dcd_int_disable(uint8_t rhport) {
   (void) rhport;
   NVIC_DisableIRQ(USB_IRQn);
 }
@@ -150,7 +124,7 @@ void dcd_set_address (uint8_t rhport, uint8_t dev_addr)
   (void) dev_addr;
 
   // Response with zlp status
-  dcd_edpt_xfer(rhport, 0x80, NULL, 0);
+  dcd_edpt_xfer(rhport, 0x80, NULL, 0, false);
 
   // DCD can only set address after status for this request is complete
   // do it at dcd_edpt0_status_complete()
@@ -253,11 +227,51 @@ bool dcd_edpt_open (uint8_t rhport, tusb_desc_endpoint_t const * desc_edpt)
   return true;
 }
 
-void dcd_edpt_close (uint8_t rhport, uint8_t ep_addr) {
+bool dcd_edpt_iso_alloc(uint8_t rhport, uint8_t ep_addr, uint16_t largest_packet_size) {
   (void) rhport;
-  (void) ep_addr;
+  uint8_t const epnum = tu_edpt_number(ep_addr);
+  uint8_t const dir   = tu_edpt_dir(ep_addr);
 
-  // TODO: implement if necessary?
+  // Reserve the endpoint bank with the largest packet size (persists across altsettings). The
+  // buffer address/count are filled per-transfer in dcd_edpt_xfer; only the SIZE bucket is fixed.
+  UsbDeviceDescBank* bank = &sram_registers[epnum][dir];
+  uint32_t size_value = 0;
+  while (size_value < 7) {
+    if (1 << (size_value + 3) >= largest_packet_size) {
+      break;
+    }
+    size_value++;
+  }
+  if ( size_value == 7 && largest_packet_size > 1023 ) return false;
+
+  bank->PCKSIZE.bit.SIZE = size_value;
+  return true;
+}
+
+bool dcd_edpt_iso_activate(uint8_t rhport, const tusb_desc_endpoint_t *desc_ep) {
+  (void)rhport;
+  uint8_t const epnum = tu_edpt_number(desc_ep->bEndpointAddress);
+  uint8_t const dir   = tu_edpt_dir(desc_ep->bEndpointAddress);
+
+  // Configure and enable the ISO endpoint on altsetting selection (bank SIZE already reserved by
+  // dcd_edpt_iso_alloc). Mirrors the per-direction setup in dcd_edpt_open(), plus a bank scrub:
+  // under ISO_ALLOC the EP is never disabled on alt0 (usbd_edpt_close is a no-op), so the bank-ready
+  // state from the previous streaming session survives into re-activation. Leave the EP un-armed so
+  // a stale bank can't move a packet before dcd_edpt_xfer re-arms it (a leftover BK1RDY with a stale
+  // BYTE_COUNT would otherwise babble on the first IN token after re-selecting alt1).
+  UsbDeviceEndpoint* ep = &USB->DEVICE.DeviceEndpoint[epnum];
+  if ( dir == TUSB_DIR_OUT ) {
+    ep->EPCFG.bit.EPTYPE0 = desc_ep->bmAttributes.xfer + 1;
+    ep->EPSTATUSCLR.reg = USB_DEVICE_EPSTATUSCLR_STALLRQ0 | USB_DEVICE_EPSTATUSCLR_DTGLOUT;
+    ep->EPSTATUSSET.reg = USB_DEVICE_EPSTATUSSET_BK0RDY; // OUT: not ready to receive until armed
+    ep->EPINTENSET.bit.TRCPT0 = true;
+  } else {
+    ep->EPCFG.bit.EPTYPE1 = desc_ep->bmAttributes.xfer + 1;
+    ep->EPSTATUSCLR.reg = USB_DEVICE_EPSTATUSCLR_STALLRQ1 | USB_DEVICE_EPSTATUSCLR_DTGLIN |
+                          USB_DEVICE_EPSTATUSCLR_BK1RDY; // IN: clear stale "loaded" bank
+    ep->EPINTENSET.bit.TRCPT1 = true;
+  }
+  return true;
 }
 
 void dcd_edpt_close_all (uint8_t rhport)
@@ -266,8 +280,9 @@ void dcd_edpt_close_all (uint8_t rhport)
   // TODO implement dcd_edpt_close_all()
 }
 
-bool dcd_edpt_xfer (uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes)
+bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes, bool is_isr)
 {
+  (void) is_isr;
   (void) rhport;
 
   uint8_t const epnum = tu_edpt_number(ep_addr);
@@ -333,7 +348,7 @@ void dcd_edpt_clear_stall (uint8_t rhport, uint8_t ep_addr)
 //--------------------------------------------------------------------+
 // Interrupt Handler
 //--------------------------------------------------------------------+
-void maybe_transfer_complete(void) {
+static void maybe_transfer_complete(void) {
   uint32_t epints = USB->DEVICE.EPINTSMRY.reg;
 
   for (uint8_t epnum = 0; epnum < USB_EPT_NUM; epnum++) {
@@ -435,5 +450,4 @@ void dcd_int_handler (uint8_t rhport)
   // Handle complete transfer
   maybe_transfer_complete();
 }
-
 #endif

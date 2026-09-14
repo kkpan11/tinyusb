@@ -25,6 +25,11 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   name: STM32 U575 Eval
+   url: https://www.st.com/en/evaluation-tools/stm32u575i-ev.html
+*/
+
 #ifndef BOARD_H_
 #define BOARD_H_
 
@@ -44,12 +49,13 @@ extern "C"
 #define BUTTON_STATE_ACTIVE 1
 
 // UART Enable for STLink VCOM
-#define UART_DEV USART1
-#define UART_CLK_EN __HAL_RCC_USART1_CLK_ENABLE
+#define UART_ID  1
 #define UART_GPIO_PORT GPIOA
 #define UART_GPIO_AF GPIO_AF7_USART1
 #define UART_TX_PIN GPIO_PIN_9
 #define UART_RX_PIN GPIO_PIN_10
+
+#define VBUS_SENSE_EN 0
 
 //--------------------------------------------------------------------+
 // RCC Clock
@@ -104,6 +110,9 @@ static void SystemClock_Config(void) {
 }
 
 static void SystemPower_Config(void) {
+}
+
+static inline void board_vbus_sense_init(void) {
 }
 
 #ifdef __cplusplus

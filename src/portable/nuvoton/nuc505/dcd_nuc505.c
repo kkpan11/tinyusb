@@ -1,25 +1,7 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2020 Peter Lawrence
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2020 Peter Lawrence
+ * SPDX-FileCopyrightText: Copyright (c) 2020 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -38,7 +20,19 @@
 #if CFG_TUD_ENABLED && (CFG_TUSB_MCU == OPT_MCU_NUC505)
 
 #include "device/dcd.h"
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 #include "NUC505Series.h"
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * The DMA functionality of the USBD peripheral does not appear to succeed with
@@ -183,9 +177,8 @@ static void dcd_userEP_in_xfer(struct xfer_ctl_t *xfer, USBD_EP_T *ep)
 
   /* provided buffers are thankfully 32-bit aligned, allowing most data to be transferred as 32-bit */
 #if 0 // TODO support dcd_edpt_xfer_fifo API
-  if (xfer->ff)
-  {
-    tu_fifo_read_n_const_addr_full_words(xfer->ff, (void *) (&ep->EPDAT_BYTE), bytes_now);
+  if (xfer->ff) {
+    tu_fifo_read_n_access_mode(xfer->ff, (void *) (&ep->EPDAT_BYTE), bytes_now, true);
   }
   else
 #endif
@@ -279,9 +272,9 @@ static const uint32_t enabled_irqs = USBD_GINTEN_USBIEN_Msk | \
   NUC505 TinyUSB API driver implementation
 */
 
-void dcd_init(uint8_t rhport)
-{
+bool dcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   (void) rhport;
+  (void) rh_init;
 
   /* configure interrupts in their initial state; BUSINTEN and CEPINTEN will be subsequently and dynamically re-written as needed */
   USBD->GINTEN = enabled_irqs;
@@ -291,6 +284,8 @@ void dcd_init(uint8_t rhport)
   bus_reset();
 
   usb_attach();
+
+  return true;
 }
 
 void dcd_int_enable(uint8_t rhport)
@@ -327,13 +322,13 @@ bool dcd_edpt_open(uint8_t rhport, tusb_desc_endpoint_t const * p_endpoint_desc)
 
   /* mine the data for the information we need */
   int const dir = tu_edpt_dir(p_endpoint_desc->bEndpointAddress);
-  int const size = tu_edpt_packet_size(p_endpoint_desc);
+  uint16_t const size = tu_edpt_packet_size(p_endpoint_desc);
   tusb_xfer_type_t const type = p_endpoint_desc->bmAttributes.xfer;
   struct xfer_ctl_t *xfer = &xfer_table[ep - USBD->EP];
 
   /* allocate buffer from USB RAM */
   ep->EPBUFSTART = bufseg_addr;
-  bufseg_addr += size;
+  bufseg_addr += (uint32_t)size;
   ep->EPBUFEND = bufseg_addr - 1;
   TU_ASSERT(bufseg_addr <= USBD_BUF_SIZE);
 
@@ -355,14 +350,28 @@ bool dcd_edpt_open(uint8_t rhport, tusb_desc_endpoint_t const * p_endpoint_desc)
   return true;
 }
 
+bool dcd_edpt_iso_alloc(uint8_t rhport, uint8_t ep_addr, uint16_t largest_packet_size) {
+  (void) rhport;
+  (void) ep_addr;
+  (void) largest_packet_size;
+  return false; // TODO not implemented yet
+}
+
+bool dcd_edpt_iso_activate(uint8_t rhport, tusb_desc_endpoint_t const *desc_ep) {
+  (void) rhport;
+  (void) desc_ep;
+  return false; // TODO not implemented yet
+}
+
 void dcd_edpt_close_all (uint8_t rhport)
 {
   (void) rhport;
   // TODO implement dcd_edpt_close_all()
 }
 
-bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t *buffer, uint16_t total_bytes)
+bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes, bool is_isr)
 {
+  (void) is_isr;
   (void) rhport;
 
   if (0x80 == ep_addr) /* control EP0 IN */
@@ -422,8 +431,9 @@ bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t *buffer, uint16_t to
 }
 
 #if 0 // TODO support dcd_edpt_xfer_fifo API
-bool dcd_edpt_xfer_fifo (uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes)
+bool dcd_edpt_xfer_fifo(uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes, bool is_isr)
 {
+  (void) is_isr;
   (void) rhport;
 
   TU_ASSERT(0x80 != ep_addr && 0x00 != ep_addr);  // Must not be used for control stuff
@@ -669,15 +679,14 @@ void dcd_int_handler(uint8_t rhport)
           uint16_t const available_bytes = ep->EPDATCNT & USBD_EPDATCNT_DATCNT_Msk;
           /* copy the data from the PC to the previously provided buffer */
 #if 0 // TODO support dcd_edpt_xfer_fifo API
-          if (xfer->ff)
-          {
-            tu_fifo_write_n_const_addr_full_words(xfer->ff, (const void *) &ep->EPDAT_BYTE, tu_min16(available_bytes, xfer->total_bytes - xfer->out_bytes_so_far));
+          if (xfer->ff) {
+            tu_fifo_write_n_access_mode(xfer->ff, (const void *) &ep->EPDAT_BYTE, tu_min16(available_bytes, xfer->total_bytes - xfer->out_bytes_so_far), true);
           }
           else
 #endif
           {
-            for (int count = 0; (count < available_bytes) && (xfer->out_bytes_so_far < xfer->total_bytes); count++, xfer->out_bytes_so_far++)
-            {
+            for (int count = 0; (count < available_bytes) && (xfer->out_bytes_so_far < xfer->total_bytes);
+                 count++, xfer->out_bytes_so_far++) {
               *xfer->data_ptr++ = ep->EPDAT_BYTE;
             }
           }

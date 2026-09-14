@@ -1,371 +1,439 @@
 /*
- * The MIT License (MIT)
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Nathan Conrad
+ * SPDX-FileCopyrightText: Copyright (c) 2024, Ha Thach (tinyusb.org)
+ * SPDX-FileCopyrightText: Copyright (c) 2025, HiFiPhile (Zixun LI)
+ * SPDX-License-Identifier: MIT
  *
- * Copyright(c) 2016 STMicroelectronics
- * Copyright(c) N Conrad
- * Copyright (c) 2024, hathach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- *
+ * This file is part of the TinyUSB stack.
  */
 
 #ifndef TUSB_FSDEV_COMMON_H
 #define TUSB_FSDEV_COMMON_H
 
 #ifdef __cplusplus
- extern "C" {
+extern "C" {
 #endif
 
-#include "stdint.h"
+#include "common/tusb_common.h"
 
-// FSDEV_PMA_SIZE is PMA buffer size in bytes.
-// On 512-byte devices, access with a stride of two words (use every other 16-bit address)
-// On 1024-byte devices, access with a stride of one word (use every 16-bit address)
-
-// For purposes of accessing the packet
-#if ((FSDEV_PMA_SIZE) == 512u)
-  #define FSDEV_PMA_STRIDE  (2u)
-#elif ((FSDEV_PMA_SIZE) == 1024u)
-  #define FSDEV_PMA_STRIDE  (1u)
+#if CFG_TUD_ENABLED
+  #include "device/dcd.h"
 #endif
+
+#if CFG_TUH_ENABLED
+  #include "host/hcd.h"
+#endif
+
+//--------------------------------------------------------------------+
+// FSDEV Register Bit Definitions
+// Vendor-independent definitions with U_ prefix to avoid conflicts.
+// Based on the common USB FSDEV IP block register layout.
+// Lower 16 bits are shared across all variants (STM32, CH32, AT32).
+// Upper 16 bits (DRD extensions) only exist on 32-bit DRD MCUs.
+//--------------------------------------------------------------------+
+
+// EPnR / CHEPnR - Endpoint/Channel Register
+// DTOG and STAT bits are toggle-on-write-1. CTR bits are clear-on-write-0.
+//
+//   15       14        13    12     11      10     9      8       7        6         5     4      3    2    1    0
+//   CTR_RX   DTOG_RX   STAT_RX[1:0]  SETUP   EP_TYPE[1:0]  KIND    CTR_TX   DTOG_TX   STAT_TX[1:0]  EA[3:0]
+//
+// DRD 32-bit only (C0, G0, H5, U0, U5):
+//   31:27    26       25       24      23     22   21   20   19   18   17   16
+//   Rsvd     ERR_RX   ERR_TX   LSEP    NAK    DEVADDR[6:0]
+#define U_EP_CTR_RX        0x8000u
+#define U_EP_DTOG_RX       0x4000u
+#define U_EPRX_STAT        0x3000u
+#define U_EP_SETUP         0x0800u
+#define U_EP_T_FIELD       0x0600u
+#define U_EP_KIND          0x0100u
+#define U_EP_CTR_TX        0x0080u
+#define U_EP_DTOG_TX       0x0040u
+#define U_EPTX_STAT        0x0030u
+#define U_EPADDR_FIELD     0x000Fu
+
+// DRD 32-bit upper bits
+#define U_EP_ERRRX         0x04000000u
+#define U_EP_ERRTX         0x02000000u
+#define U_EP_LSEP          0x01000000u
+#define U_EP_NAK           0x00800000u
+#define U_EP_DEVADDR       0x007F0000u
+#define U_EP_DEVADDR_Pos   16u
+
+// Endpoint types (EP_TYPE field values)
+#define U_EP_BULK          0x0000u
+#define U_EP_CONTROL       0x0200u
+#define U_EP_ISOCHRONOUS   0x0400u
+#define U_EP_INTERRUPT     0x0600u
+#define U_EP_TYPE_MASK     (U_EP_T_FIELD)
+
+// EP register mask components (non-toggle bits preserved during read-modify-write)
+// Excludes DTOG_RX, STAT_RX, DTOG_TX, STAT_TX (toggle-on-write-1)
+#define U_EPREG_MASK_16    (U_EP_CTR_RX | U_EP_SETUP | U_EP_T_FIELD | U_EP_KIND | U_EP_CTR_TX | U_EPADDR_FIELD)
+#define U_EPREG_MASK_32    (U_EP_ERRRX | U_EP_ERRTX | U_EP_LSEP | U_EP_NAK | U_EP_DEVADDR | U_EPREG_MASK_16)
+
+// EP register mask selection based on bus width
+#ifdef  CFG_TUSB_FSDEV_32BIT
+  #define U_EPREG_MASK     U_EPREG_MASK_32
+#else
+  #define U_EPREG_MASK     U_EPREG_MASK_16
+#endif
+
+#define U_EPKIND_MASK      ((uint32_t)(~U_EP_KIND) & U_EPREG_MASK)
+#define U_EPTX_DTOGMASK    (U_EPTX_STAT | U_EPREG_MASK)
+#define U_EPRX_DTOGMASK    (U_EPRX_STAT | U_EPREG_MASK)
+
+// Bit positions
+#define U_EPTX_STAT_Pos    4u
+#define U_EP_DTOG_TX_Pos   6u
+#define U_EP_CTR_TX_Pos    7u
+
+// Data toggle helpers
+#define U_EPTX_DTOG1       0x0010u
+#define U_EPTX_DTOG2       0x0020u
+#define U_EPRX_DTOG1       0x1000u
+#define U_EPRX_DTOG2       0x2000u
+
+// CNTR - Control Register
+//   15      14        13    12     11     10       9     8      7    6    5    4        3      2       1     0
+//   CTRM    PMAOVRM   ERRM  WKUPM  SUSPM  RESETM   SOFM  ESOFM  Rsvd Rsvd Rsvd RESUME   FSUSP  LPMODE  PDWN  FRES
+//
+// DRD 32-bit only:
+//   31     30:16
+//   HOST   Rsvd
+#define U_CNTR_CTRM       0x8000u
+#define U_CNTR_PMAOVRM    0x4000u
+#define U_CNTR_ERRM       0x2000u
+#define U_CNTR_WKUPM      0x1000u
+#define U_CNTR_SUSPM      0x0800u
+#define U_CNTR_RESETM     0x0400u
+#define U_CNTR_SOFM       0x0200u
+#define U_CNTR_ESOFM      0x0100u
+#define U_CNTR_RESUME     0x0010u
+#define U_CNTR_FSUSP      0x0008u
+#define U_CNTR_LPMODE     0x0004u
+#define U_CNTR_PDWN       0x0002u
+#define U_CNTR_FRES       0x0001u
+
+#define U_CNTR_HOST       0x80000000u   // DRD: enable host mode
+#define U_CNTR_DCON       0x0400u       // DRD host: same bit as RESETM
+
+// ISTR - Interrupt Status Register
+//   15    14      13   12    11    10     9    8      7    6    5    4     3    2    1    0
+//   CTR   PMAOVR  ERR  WKUP  SUSP  RESET  SOF  ESOF   Rsvd Rsvd Rsvd DIR   EP_ID[3:0]
+//
+// DRD 32-bit only:
+//   31   30         29          28:16
+//   Rsvd LS_DCONN   DCON_STAT   Rsvd
+#define U_ISTR_CTR        0x8000u
+#define U_ISTR_PMAOVR     0x4000u
+#define U_ISTR_ERR        0x2000u
+#define U_ISTR_WKUP       0x1000u
+#define U_ISTR_SUSP       0x0800u
+#define U_ISTR_RESET      0x0400u
+#define U_ISTR_SOF        0x0200u
+#define U_ISTR_ESOF       0x0100u
+#define U_ISTR_DIR        0x0010u
+#define U_ISTR_EP_ID      0x000Fu
+
+#define U_ISTR_LS_DCONN   0x40000000u   // DRD: low-speed device connected
+#define U_ISTR_DCON_STAT  0x20000000u   // DRD: device connection status
+#define U_ISTR_DCON       0x0400u       // DRD host: same bit as RESET
+
+// FNR - Frame Number Register (read-only)
+//   15    14    13   12   11   10   9    8    7    6    5    4    3    2    1    0
+//   RXDP  RXDM  LCK[2:0]       FN[10:0]
+#define U_FNR_RXDP        0x8000u
+#define U_FNR_RXDM        0x4000u
+#define U_FNR_FN          0x07FFu
+
+// DADDR - Device Address Register
+//   15:8   7    6    5    4    3    2    1    0
+//   Rsvd   EF   ADD[6:0]
+#define U_DADDR_EF        0x80u
+
+// LPMCSR - LPM Control and Status Register
+// Supported: STM32 F0, L0, L4, G0, G4, C0, H5, U0, WB. Not on: F1, F3, AT32, CH32.
+//   15:8           7    6    5    4    3    2    1        0
+//   Rsvd           BESL[3:0]      Rsvd REMWAKE  Rsvd LPMACK   LMPEN
+#define U_LPMCSR_LMPEN     0x0001u
+#define U_LPMCSR_LPMACK    0x0002u
+#define U_LPMCSR_REMWAKE   0x0008u
+#define U_LPMCSR_BESL      0x00F0u
+
+// BCDR - Battery Charging Detector Register
+// Supported: STM32 F0, L0, L4, G0, G4, C0, H5, U0, WB. Not on: F1, F3, AT32, CH32.
+//   15    14:8   7        6     5     4      3     2     1      0
+//   DPPU  Rsvd   PS2DET   SDET  PDET  DCDET  SDEN  PDEN  DCDEN  BCDEN
+#define U_BCDR_BCDEN       0x0001u
+#define U_BCDR_DCDEN       0x0002u
+#define U_BCDR_PDEN        0x0004u
+#define U_BCDR_SDEN        0x0008u
+#define U_BCDR_DCDET       0x0010u
+#define U_BCDR_PDET        0x0020u
+#define U_BCDR_SDET        0x0040u
+#define U_BCDR_PS2DET      0x0080u
+#define U_BCDR_DPPU        0x8000u
+
+// Channel status (DRD host mode, reuses STAT_TX/STAT_RX bit positions)
+#define U_CH_TX_STTX       0x0030u
+#define U_CH_TX_ACK_SBUF   0x0000u
+#define U_CH_TX_STALL      0x0010u
+#define U_CH_TX_NAK        0x0020u
+
+#define U_CH_RX_STRX       0x3000u
+#define U_CH_RX_ACK_SBUF   0x0000u
+#define U_CH_RX_STALL      0x1000u
+#define U_CH_RX_NAK        0x2000u
+#define U_CH_RX_VALID      0x3000u
+
+//--------------------------------------------------------------------+
+// Registers Typedef
+//--------------------------------------------------------------------+
+// hardware limit endpoint
+#define FSDEV_EP_COUNT 8
 
 // The fsdev_bus_t type can be used for both register and PMA access necessities
-// For type-safety create a new macro for the volatile address of PMAADDR
-// The compiler should warn us if we cast it to a non-volatile type?
-#ifdef FSDEV_BUS_32BIT
+#ifdef CFG_TUSB_FSDEV_32BIT
 typedef uint32_t fsdev_bus_t;
-static volatile uint32_t * const pma32 = (volatile uint32_t*)USB_PMAADDR;
-
 #else
 typedef uint16_t fsdev_bus_t;
-// Volatile is also needed to prevent the optimizer from changing access to 32-bit (as 32-bit access is forbidden)
-static volatile uint16_t * const pma = (volatile uint16_t*)USB_PMAADDR;
-
-TU_ATTR_ALWAYS_INLINE static inline volatile uint16_t * pcd_btable_word_ptr(USB_TypeDef * USBx, size_t x) {
-  size_t total_word_offset = (((USBx)->BTABLE)>>1) + x;
-  total_word_offset *= FSDEV_PMA_STRIDE;
-  return &(pma[total_word_offset]);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline volatile uint16_t* pcd_ep_tx_cnt_ptr(USB_TypeDef * USBx, uint32_t bEpIdx) {
-  return pcd_btable_word_ptr(USBx,(bEpIdx)*4u + 1u);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline volatile uint16_t* pcd_ep_rx_cnt_ptr(USB_TypeDef * USBx, uint32_t bEpIdx) {
-  return pcd_btable_word_ptr(USBx,(bEpIdx)*4u + 3u);
-}
 #endif
 
-/* Aligned buffer size according to hardware */
-TU_ATTR_ALWAYS_INLINE static inline uint16_t pcd_aligned_buffer_size(uint16_t size) {
-  /* The STM32 full speed USB peripheral supports only a limited set of
-   * buffer sizes given by the RX buffer entry format in the USB_BTABLE. */
-  uint16_t blocksize = (size > 62) ? 32 : 2;
+// volatile 32-bit aligned
+#define _va32 volatile TU_ATTR_ALIGNED(4)
 
-  // Round up while dividing requested size by blocksize
-  uint16_t numblocks = (size + blocksize - 1) / blocksize ;
+typedef struct {
+  struct {
+    _va32 fsdev_bus_t reg;
+  } ep[FSDEV_EP_COUNT];
 
-  return numblocks * blocksize;
-}
+  _va32 uint32_t    RESERVED7[8]; // Reserved
+  _va32 fsdev_bus_t CNTR;         // 40: Control register
+  _va32 fsdev_bus_t ISTR;         // 44: Interrupt status register
+  _va32 fsdev_bus_t FNR;          // 48: Frame number register
+  _va32 fsdev_bus_t DADDR;        // 4C: Device address register
+  _va32 fsdev_bus_t BTABLE;       // 50: Buffer Table address register
+  _va32 fsdev_bus_t LPMCSR;       // 54: LPM Control and Status (not on F1, F3, AT32, CH32)
+  _va32 fsdev_bus_t BCDR;         // 58: Battery Charging Detector (not on F1, F3, AT32, CH32)
+} fsdev_regs_t;
 
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_endpoint(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t wRegValue) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  volatile uint32_t *reg = (volatile uint32_t *)(USB_DRD_BASE + bEpIdx*4);
-  *reg = wRegValue;
+TU_VERIFY_STATIC(offsetof(fsdev_regs_t, CNTR) == 0x40, "Wrong offset");
+TU_VERIFY_STATIC(sizeof(fsdev_regs_t) == 0x5C, "Size is not correct");
+
+#define FSDEV_REG ((fsdev_regs_t *)FSDEV_REG_BASE)
+
+//--------------------------------------------------------------------+
+// BTable and PMA Access
+//--------------------------------------------------------------------+
+
+// If sharing with CAN, one can set this to be non-zero to give CAN space where it wants it
+// Both of these MUST be a multiple of 2, and are in byte units.
+#ifndef FSDEV_BTABLE_BASE
+  #define FSDEV_BTABLE_BASE 0U
+#endif
+TU_VERIFY_STATIC((FSDEV_BTABLE_BASE & 0x7) == 0, "BTABLE base must be aligned to 8 bytes");
+
+#define FSDEV_ADDR_DATA_RATIO (CFG_TUSB_FIFO_HWFIFO_ADDR_STRIDE/CFG_TUSB_FIFO_HWFIFO_DATA_STRIDE)
+
+// Need alignment when access address is 32 bit but data is only 16-bit
+#if FSDEV_ADDR_DATA_RATIO == 2
+  #define fsdev_addr_data_align TU_ATTR_ALIGNED(4)
 #else
-  volatile uint16_t *reg = (volatile uint16_t *)((&USBx->EP0R) + bEpIdx*2u);
-  *reg = (uint16_t)wRegValue;
+  #define fsdev_addr_data_align
 #endif
-}
 
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_endpoint(USB_TypeDef * USBx, uint32_t bEpIdx) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  volatile const uint32_t *reg = (volatile const uint32_t *)(USB_DRD_BASE + bEpIdx*4);
+enum {
+  BTABLE_BUF_TX = 0,
+  BTABLE_BUF_RX = 1
+};
+
+// Buffer Table is located in Packet Memory Area (PMA) and therefore its address access is forced to either
+// 16-bit or 32-bit depending on  CFG_TUSB_FSDEV_32BIT.
+// 0: TX (IN), 1: RX (OUT)
+typedef union {
+  // data is strictly 16-bit access (address could be 32-bit aligned)
+  struct {
+    volatile fsdev_addr_data_align uint16_t addr;
+    volatile fsdev_addr_data_align uint16_t count;
+  } ep16[FSDEV_EP_COUNT][2];
+
+  // strictly 32-bit access
+  struct {
+    volatile uint32_t count_addr;
+  } ep32[FSDEV_EP_COUNT][2];
+} fsdev_btable_t;
+
+TU_VERIFY_STATIC(sizeof(fsdev_btable_t) == FSDEV_EP_COUNT * 8 * FSDEV_ADDR_DATA_RATIO, "size is not correct");
+TU_VERIFY_STATIC(FSDEV_BTABLE_BASE + FSDEV_EP_COUNT * 8 <= CFG_TUSB_FSDEV_PMA_SIZE, "BTABLE does not fit in PMA RAM");
+
+#define FSDEV_BTABLE ((volatile fsdev_btable_t *)(FSDEV_PMA_BASE + FSDEV_ADDR_DATA_RATIO * FSDEV_BTABLE_BASE))
+
+typedef struct {
+  volatile fsdev_addr_data_align fsdev_bus_t value;
+} fsdev_pma_buf_t;
+
+#define PMA_BUF_AT(_addr) ((fsdev_pma_buf_t *)(FSDEV_PMA_BASE + FSDEV_ADDR_DATA_RATIO * (_addr)))
+
+//--------------------------------------------------------------------+
+// Vendor-specific includes
+//--------------------------------------------------------------------+
+#if defined(TUP_USBIP_FSDEV_STM32)
+  #include "fsdev_stm32.h"
+#elif defined(TUP_USBIP_FSDEV_CH32)
+  #include "fsdev_ch32.h"
+#elif defined(TUP_USBIP_FSDEV_AT32)
+  #include "fsdev_at32.h"
+#elif defined(TUP_USBIP_FSDEV_APM32)
+  #include "fsdev_apm32.h"
 #else
-  volatile const uint16_t *reg = (volatile const uint16_t *)((&USBx->EP0R) + bEpIdx*2u);
+  #error "Unknown USB IP"
 #endif
-  return *reg;
+
+//--------------------------------------------------------------------+
+// Endpoint Helper
+// - CTR is write 0 to clear
+// - DTOG and STAT are write 1 to toggle
+//--------------------------------------------------------------------+
+typedef enum {
+  EP_STAT_DISABLED = 0,
+  EP_STAT_STALL    = 1,
+  EP_STAT_NAK      = 2,
+  EP_STAT_VALID    = 3
+} ep_stat_t;
+
+#define EP_STAT_MASK(_dir) (3u << (U_EPTX_STAT_Pos + ((_dir) == TUSB_DIR_IN ? 0 : 8)))
+#define EP_DTOG_MASK(_dir) (1u << (U_EP_DTOG_TX_Pos + ((_dir) == TUSB_DIR_IN ? 0 : 8)))
+
+#define CH_STAT_MASK(_dir) (3u << (U_EPTX_STAT_Pos + ((_dir) == TUSB_DIR_IN ? 8 : 0)))
+#define CH_DTOG_MASK(_dir) (1u << (U_EP_DTOG_TX_Pos + ((_dir) == TUSB_DIR_IN ? 8 : 0)))
+
+TU_ATTR_ALWAYS_INLINE static inline uint32_t ep_read(uint32_t ep_id) {
+  return FSDEV_REG->ep[ep_id].reg;
 }
 
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_eptype(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t wType) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= (uint32_t)USB_EP_T_MASK;
-  regVal |= wType;
-  regVal |= USB_EP_CTR_RX | USB_EP_CTR_TX; // These clear on write0, so must set high
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
-}
+TU_ATTR_ALWAYS_INLINE static inline void ep_write(uint32_t ep_id, uint32_t value, bool need_exclusive) {
+  if (need_exclusive) {
+    fsdev_int_disable(0);
+  }
 
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_eptype(USB_TypeDef * USBx, uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EP_T_FIELD;
-  return regVal;
-}
+  FSDEV_REG->ep[ep_id].reg = (fsdev_bus_t)value;
 
-/**
-  * @brief  Clears bit CTR_RX / CTR_TX in the endpoint register.
-  * @param  USBx USB peripheral instance register address.
-  * @param  bEpIdx Endpoint Number.
-  * @retval None
-  */
-TU_ATTR_ALWAYS_INLINE static inline void pcd_clear_rx_ep_ctr(USB_TypeDef * USBx, uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPREG_MASK;
-  regVal &= ~USB_EP_CTR_RX;
-  regVal |= USB_EP_CTR_TX; // preserve CTR_TX (clears on writing 0)
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_clear_tx_ep_ctr(USB_TypeDef * USBx, uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPREG_MASK;
-  regVal &= ~USB_EP_CTR_TX;
-  regVal |= USB_EP_CTR_RX; // preserve CTR_RX (clears on writing 0)
-  pcd_set_endpoint(USBx, bEpIdx,regVal);
-}
-
-/**
-  * @brief  gets counter of the tx buffer.
-  * @param  USBx USB peripheral instance register address.
-  * @param  bEpIdx Endpoint Number.
-  * @retval Counter value
-  */
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_ep_tx_cnt(USB_TypeDef * USBx, uint32_t bEpIdx) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  return (pma32[2*bEpIdx] & 0x03FF0000) >> 16;
-#else
-  volatile const uint16_t *regPtr = pcd_ep_tx_cnt_ptr(USBx, bEpIdx);
-  return *regPtr & 0x3ffU;
-#endif
-}
-
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_ep_rx_cnt(USB_TypeDef * USBx, uint32_t bEpIdx) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  return (pma32[2*bEpIdx + 1] & 0x03FF0000) >> 16;
-#else
-  volatile const uint16_t *regPtr = pcd_ep_rx_cnt_ptr(USBx, bEpIdx);
-  return *regPtr & 0x3ffU;
-#endif
-}
-
-#define pcd_get_ep_dbuf0_cnt pcd_get_ep_tx_cnt
-#define pcd_get_ep_dbuf1_cnt pcd_get_ep_rx_cnt
-
-/**
-  * @brief  Sets address in an endpoint register.
-  * @param  USBx USB peripheral instance register address.
-  * @param  bEpIdx Endpoint Number.
-  * @param  bAddr Address.
-  * @retval None
-  */
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_address(USB_TypeDef * USBx,  uint32_t bEpIdx, uint32_t bAddr) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPREG_MASK;
-  regVal |= bAddr;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX;
-  pcd_set_endpoint(USBx, bEpIdx,regVal);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_ep_tx_address(USB_TypeDef * USBx, uint32_t bEpIdx) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  return pma32[2*bEpIdx] & 0x0000FFFFu ;
-#else
-  return *pcd_btable_word_ptr(USBx,(bEpIdx)*4u + 0u);
-#endif
-}
-
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_ep_rx_address(USB_TypeDef * USBx, uint32_t bEpIdx) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  return pma32[2*bEpIdx + 1] & 0x0000FFFFu;
-#else
-  return *pcd_btable_word_ptr(USBx,(bEpIdx)*4u + 2u);
-#endif
-}
-
-#define pcd_get_ep_dbuf0_address pcd_get_ep_tx_address
-#define pcd_get_ep_dbuf1_address pcd_get_ep_rx_address
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_tx_address(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t addr) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  pma32[2*bEpIdx] = (pma32[2*bEpIdx] & 0xFFFF0000u) | (addr & 0x0000FFFCu);
-#else
-  *pcd_btable_word_ptr(USBx,(bEpIdx)*4u + 0u) = addr;
-#endif
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_rx_address(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t addr) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  pma32[2*bEpIdx + 1] = (pma32[2*bEpIdx + 1] & 0xFFFF0000u) | (addr & 0x0000FFFCu);
-#else
-  *pcd_btable_word_ptr(USBx,(bEpIdx)*4u + 2u) = addr;
-#endif
-}
-
-#define pcd_set_ep_dbuf0_address pcd_set_ep_tx_address
-#define pcd_set_ep_dbuf1_address pcd_set_ep_rx_address
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_tx_cnt(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t wCount) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  pma32[2*bEpIdx] = (pma32[2*bEpIdx] & ~0x03FF0000u) | ((wCount & 0x3FFu) << 16);
-#else
-  volatile uint16_t * reg = pcd_ep_tx_cnt_ptr(USBx, bEpIdx);
-  *reg = (uint16_t) (*reg & (uint16_t) ~0x3FFU) | (wCount & 0x3FFU);
-#endif
-}
-
-#define pcd_set_ep_tx_dbuf0_cnt pcd_set_ep_tx_cnt
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_tx_dbuf1_cnt(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t wCount) {
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  pma32[2*bEpIdx + 1] = (pma32[2*bEpIdx + 1] & ~0x03FF0000u) | ((wCount & 0x3FFu) << 16);
-#else
-  volatile uint16_t * reg = pcd_ep_rx_cnt_ptr(USBx, bEpIdx);
-  *reg = (uint16_t) (*reg & (uint16_t) ~0x3FFU) | (wCount & 0x3FFU);
-#endif
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_blsize_num_blocks(USB_TypeDef * USBx, uint32_t rxtx_idx,
-                                                                      uint32_t blocksize, uint32_t numblocks) {
-  /* Encode into register. When BLSIZE==1, we need to subtract 1 block count */
-#ifdef FSDEV_BUS_32BIT
-  (void) USBx;
-  pma32[rxtx_idx] = (pma32[rxtx_idx] & 0x0000FFFFu) | (blocksize << 31) | ((numblocks - blocksize) << 26);
-#else
-  volatile uint16_t *pdwReg = pcd_btable_word_ptr(USBx, rxtx_idx*2u + 1u);
-  *pdwReg = (blocksize << 15) | ((numblocks - blocksize) << 10);
-#endif
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_bufsize(USB_TypeDef * USBx, uint32_t rxtx_idx, uint32_t wCount) {
-  wCount = pcd_aligned_buffer_size(wCount);
-
-  /* We assume that the buffer size is already aligned to hardware requirements. */
-  uint16_t blocksize = (wCount > 62) ? 1 : 0;
-  uint16_t numblocks = wCount / (blocksize ? 32 : 2);
-
-  /* There should be no remainder in the above calculation */
-  TU_ASSERT((wCount - (numblocks * (blocksize ? 32 : 2))) == 0, /**/);
-
-  /* Encode into register. When BLSIZE==1, we need to subtract 1 block count */
-  pcd_set_ep_blsize_num_blocks(USBx, rxtx_idx, blocksize, numblocks);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_rx_dbuf0_cnt(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t wCount) {
-  pcd_set_ep_bufsize(USBx, 2*bEpIdx, wCount);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_rx_cnt(USB_TypeDef * USBx, uint32_t bEpIdx, uint32_t wCount) {
-  pcd_set_ep_bufsize(USBx, 2*bEpIdx + 1, wCount);
-}
-
-#define pcd_set_ep_rx_dbuf1_cnt pcd_set_ep_rx_cnt
-
-/**
-  * @brief  sets the status for tx transfer (bits STAT_TX[1:0]).
-  * @param  USBx USB peripheral instance register address.
-  * @param  bEpIdx Endpoint Number.
-  * @param  wState new state
-  * @retval None
-  */
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_tx_status(USB_TypeDef * USBx,  uint32_t bEpIdx, uint32_t wState) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPTX_DTOGMASK;
-  regVal ^= wState;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX;
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
-}
-
-/**
-  * @brief  sets the status for rx transfer (bits STAT_TX[1:0])
-  * @param  USBx USB peripheral instance register address.
-  * @param  bEpIdx Endpoint Number.
-  * @param  wState new state
-  * @retval None
-  */
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_rx_status(USB_TypeDef * USBx,  uint32_t bEpIdx, uint32_t wState) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPRX_DTOGMASK;
-  regVal ^= wState;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX;
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline uint32_t pcd_get_ep_rx_status(USB_TypeDef * USBx,  uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  return (regVal & USB_EPRX_STAT) >> (12u);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_rx_dtog(USB_TypeDef * USBx,  uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPREG_MASK;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX|USB_EP_DTOG_RX;
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_tx_dtog(USB_TypeDef * USBx,  uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPREG_MASK;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX|USB_EP_DTOG_TX;
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
-}
-
-TU_ATTR_ALWAYS_INLINE static inline void pcd_clear_rx_dtog(USB_TypeDef * USBx,  uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  if((regVal & USB_EP_DTOG_RX) != 0) {
-    pcd_rx_dtog(USBx,bEpIdx);
+  if (need_exclusive) {
+    fsdev_int_enable(0);
   }
 }
 
-TU_ATTR_ALWAYS_INLINE static inline void pcd_clear_tx_dtog(USB_TypeDef * USBx,  uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  if((regVal & USB_EP_DTOG_TX) != 0) {
-    pcd_tx_dtog(USBx,bEpIdx);
-  }
+TU_ATTR_ALWAYS_INLINE static inline void ep_write_clear_ctr(uint32_t ep_id, tusb_dir_t dir) {
+  uint32_t reg = FSDEV_REG->ep[ep_id].reg;
+  reg |= U_EP_CTR_TX | U_EP_CTR_RX;
+  reg &= U_EPREG_MASK;
+  reg &= ~(1u << (U_EP_CTR_TX_Pos + (dir == TUSB_DIR_IN ? 0u : 8u)));
+  ep_write(ep_id, reg, false);
 }
 
-TU_ATTR_ALWAYS_INLINE static inline void pcd_set_ep_kind(USB_TypeDef * USBx,  uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal |= USB_EP_KIND;
-  regVal &= USB_EPREG_MASK;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX;
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
+TU_ATTR_ALWAYS_INLINE static inline void ep_change_status(uint32_t *reg, tusb_dir_t dir, ep_stat_t state) {
+  *reg ^= (state << (U_EPTX_STAT_Pos + (dir == TUSB_DIR_IN ? 0 : 8)));
 }
 
-TU_ATTR_ALWAYS_INLINE static inline void pcd_clear_ep_kind(USB_TypeDef * USBx, uint32_t bEpIdx) {
-  uint32_t regVal = pcd_get_endpoint(USBx, bEpIdx);
-  regVal &= USB_EPKIND_MASK;
-  regVal |= USB_EP_CTR_RX|USB_EP_CTR_TX;
-  pcd_set_endpoint(USBx, bEpIdx, regVal);
+TU_ATTR_ALWAYS_INLINE static inline void ep_change_dtog(uint32_t *reg, tusb_dir_t dir, uint8_t state) {
+  *reg ^= (state << (U_EP_DTOG_TX_Pos + (dir == TUSB_DIR_IN ? 0 : 8)));
 }
+
+TU_ATTR_ALWAYS_INLINE static inline bool ep_is_iso(uint32_t reg) {
+  return (reg & U_EP_TYPE_MASK) == U_EP_ISOCHRONOUS;
+}
+
+//--------------------------------------------------------------------+
+// Channel Helper
+// - Direction is opposite to endpoint direction
+//--------------------------------------------------------------------+
+
+TU_ATTR_ALWAYS_INLINE static inline uint32_t ch_read(uint32_t ch_id) {
+  return ep_read(ch_id);
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void ch_write(uint32_t ch_id, uint32_t value, bool need_exclusive) {
+  ep_write(ch_id, value, need_exclusive);
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void ch_write_clear_ctr(uint32_t ch_id, tusb_dir_t dir) {
+  uint32_t reg = FSDEV_REG->ep[ch_id].reg;
+  reg |= U_EP_CTR_TX | U_EP_CTR_RX;
+  reg &= U_EPREG_MASK;
+  reg &= ~(1u << (U_EP_CTR_TX_Pos + (dir == TUSB_DIR_IN ? 8u : 0u)));
+  ep_write(ch_id, reg, false);
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void ch_change_status(uint32_t *reg, tusb_dir_t dir, ep_stat_t state) {
+  *reg ^= (state << (U_EPTX_STAT_Pos + (dir == TUSB_DIR_IN ? 8 : 0)));
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void ch_change_dtog(uint32_t *reg, tusb_dir_t dir, uint8_t state) {
+  *reg ^= (state << (U_EP_DTOG_TX_Pos + (dir == TUSB_DIR_IN ? 8 : 0)));
+}
+
+//--------------------------------------------------------------------+
+// BTable Helper
+//--------------------------------------------------------------------+
+
+TU_ATTR_ALWAYS_INLINE static inline uint32_t btable_get_addr(uint32_t ep_id, uint8_t buf_id) {
+#ifdef  CFG_TUSB_FSDEV_32BIT
+  return FSDEV_BTABLE->ep32[ep_id][buf_id].count_addr & 0x0000FFFFu;
+#else
+  return FSDEV_BTABLE->ep16[ep_id][buf_id].addr;
+#endif
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void btable_set_addr(uint32_t ep_id, uint8_t buf_id, uint16_t addr) {
+#ifdef  CFG_TUSB_FSDEV_32BIT
+  uint32_t count_addr = FSDEV_BTABLE->ep32[ep_id][buf_id].count_addr;
+  count_addr          = (count_addr & 0xFFFF0000u) | (addr & 0x0000FFFCu);
+
+  FSDEV_BTABLE->ep32[ep_id][buf_id].count_addr = count_addr;
+#else
+  FSDEV_BTABLE->ep16[ep_id][buf_id].addr = addr;
+#endif
+}
+
+TU_ATTR_ALWAYS_INLINE static inline uint16_t btable_get_count(uint32_t ep_id, uint8_t buf_id) {
+  uint16_t count;
+#ifdef  CFG_TUSB_FSDEV_32BIT
+  count = (FSDEV_BTABLE->ep32[ep_id][buf_id].count_addr >> 16);
+#else
+  count = FSDEV_BTABLE->ep16[ep_id][buf_id].count;
+#endif
+  return count & 0x3FFU;
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void btable_set_count(uint32_t ep_id, uint8_t buf_id, uint16_t byte_count) {
+#ifdef  CFG_TUSB_FSDEV_32BIT
+  uint32_t count_addr = FSDEV_BTABLE->ep32[ep_id][buf_id].count_addr;
+  count_addr          = (count_addr & ~0x03FF0000u) | ((byte_count & 0x3FFu) << 16);
+
+  FSDEV_BTABLE->ep32[ep_id][buf_id].count_addr = count_addr;
+#else
+  uint16_t cnt = FSDEV_BTABLE->ep16[ep_id][buf_id].count;
+  cnt          = (cnt & ~0x3FFU) | (byte_count & 0x3FFU);
+
+  FSDEV_BTABLE->ep16[ep_id][buf_id].count = cnt;
+#endif
+}
+
+// Reset the USB Core
+void fsdev_core_reset(void);
+
+// De-initialize the USB Core
+void fsdev_deinit(void);
+
+// Aligned buffer size according to hardware
+uint16_t pma_align_buffer_size(uint16_t size, uint8_t *blsize, uint8_t *num_block);
+
+// Set RX buffer size
+void btable_set_rx_bufsize(uint32_t ep_id, uint8_t buf_id, uint16_t wCount);
 
 #ifdef __cplusplus
- }
+}
 #endif
 
-#endif
+#endif /* TUSB_FSDEV_COMMON_H */

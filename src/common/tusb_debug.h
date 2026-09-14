@@ -1,31 +1,12 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2022, Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2022, Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
 
-#ifndef _TUSB_DEBUG_H_
-#define _TUSB_DEBUG_H_
+#ifndef TUSB_DEBUG_H_
+#define TUSB_DEBUG_H_
 
 #ifdef __cplusplus
  extern "C" {
@@ -55,11 +36,14 @@ void tu_print_mem(void const *buf, uint32_t count, uint8_t indent);
   extern int CFG_TUSB_DEBUG_PRINTF(const char *format, ...);
   #define tu_printf    CFG_TUSB_DEBUG_PRINTF
 #else
-  #define tu_printf    printf
+  #include <stdio.h>
+  #define tu_printf(...)    (void) printf(__VA_ARGS__)
 #endif
 
-static inline void tu_print_buf(uint8_t const* buf, uint32_t bufsize) {
-  for(uint32_t i=0; i<bufsize; i++) tu_printf("%02X ", buf[i]);
+TU_ATTR_ALWAYS_INLINE static inline void tu_print_buf(uint8_t const* buf, uint32_t bufsize) {
+  for(uint32_t i=0; i<bufsize; i++) {
+    tu_printf("%02X ", buf[i]);
+  }
   tu_printf("\r\n");
 }
 
@@ -108,16 +92,22 @@ typedef struct {
 } tu_lookup_table_t;
 
 static inline const char* tu_lookup_find(tu_lookup_table_t const* p_table, uint32_t key) {
-  tu_static char not_found[11];
-
   for(uint16_t i=0; i<p_table->count; i++) {
-    if (p_table->items[i].key == key) return p_table->items[i].data;
+    if (p_table->items[i].key == key) {
+      return p_table->items[i].data;
+    }
   }
 
-  // not found return the key value in hex
-  snprintf(not_found, sizeof(not_found), "0x%08lX", (unsigned long) key);
-
+  #ifndef CFG_TUSB_DEBUG_PRINTF
+  // not found return the key value in hex if no custom printf is defined
+  static char not_found[11];
+  if (snprintf(not_found, sizeof(not_found), "0x%08lX", (unsigned long)key) <= 0) {
+    not_found[0] = 0;
+  }
   return not_found;
+  #else
+  return "NotFound";
+  #endif
 }
 
 #endif // CFG_TUSB_DEBUG
@@ -131,8 +121,6 @@ static inline const char* tu_lookup_find(tu_lookup_table_t const* p_table, uint3
   #define TU_LOG_LOCATION()
   #define TU_LOG_FAILED()
 #endif
-
-// TODO replace all TU_LOGn with TU_LOG(n)
 
 #define TU_LOG0(...)
 #define TU_LOG0_MEM(...)
@@ -168,4 +156,4 @@ static inline const char* tu_lookup_find(tu_lookup_table_t const* p_table, uint3
  }
 #endif
 
-#endif /* _TUSB_DEBUG_H_ */
+#endif

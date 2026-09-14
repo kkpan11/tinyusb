@@ -25,23 +25,24 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   manufacturer: Raspberry Pi
+*/
+
 #include "pico/stdlib.h"
 #include "pico/binary_info.h"
 #include "pico/unique_id.h"
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
 #include "hardware/resets.h"
+#include "hardware/clocks.h"
 #include "hardware/structs/ioqspi.h"
 #include "hardware/structs/sio.h"
 
 #include "bsp/board_api.h"
 #include "board.h"
 
-#ifdef UART_DEV
-static uart_inst_t *uart_inst;
-#endif
-
-#if CFG_TUH_RPI_PIO_USB || CFG_TUD_RPI_PIO_USB
+#if (CFG_TUH_ENABLED && CFG_TUH_RPI_PIO_USB) || (CFG_TUD_ENABLED && CFG_TUD_RPI_PIO_USB)
 #include "pio_usb.h"
 #endif
 
@@ -50,6 +51,36 @@ static uart_inst_t *uart_inst;
 static void max3421_init(void);
 #endif
 
+//--------------------------------------------------------------------+
+//
+//--------------------------------------------------------------------+
+// LED
+#if !defined(LED_PIN) && defined(PICO_DEFAULT_LED_PIN)
+#define LED_PIN               PICO_DEFAULT_LED_PIN
+#define LED_STATE_ON          (!(PICO_DEFAULT_LED_PIN_INVERTED))
+#endif
+
+// Button, if not defined use BOOTSEL button
+#ifndef BUTTON_PIN
+#define BUTTON_BOOTSEL
+#define BUTTON_STATE_ACTIVE   0
+#endif
+
+// UART
+#if !defined(UART_DEV) && defined(PICO_DEFAULT_UART) && defined(LIB_PICO_STDIO_UART) && \
+  defined(PICO_DEFAULT_UART_TX_PIN) && defined(PICO_DEFAULT_UART_RX_PIN)
+#define UART_DEV              PICO_DEFAULT_UART
+#define UART_TX_PIN           PICO_DEFAULT_UART_TX_PIN
+#define UART_RX_PIN           PICO_DEFAULT_UART_RX_PIN
+#endif
+
+#ifdef UART_DEV
+static uart_inst_t *uart_inst;
+#endif
+
+//--------------------------------------------------------------------+
+//
+//--------------------------------------------------------------------+
 #ifdef BUTTON_BOOTSEL
 // This example blinks the Picoboard LED when the BOOTSEL button is pressed.
 //
@@ -61,7 +92,7 @@ static void max3421_init(void);
 //
 // This doesn't work if others are trying to access flash at the same time,
 // e.g. XIP streamer, or the other core.
-bool __no_inline_not_in_flash_func(get_bootsel_button)(void) {
+static bool __no_inline_not_in_flash_func(get_bootsel_button)(void) {
   const uint CS_PIN_INDEX = 1;
 
   // Must disable interrupts, as interrupt handlers may be in flash, and we
@@ -74,11 +105,19 @@ bool __no_inline_not_in_flash_func(get_bootsel_button)(void) {
                   IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
 
   // Note we can't call into any sleep functions in flash right now
-  for (volatile int i = 0; i < 1000; ++i);
+  for (volatile int i = 0; i < 1000; ++i) {
+    __nop();
+  }
 
   // The HI GPIO registers in SIO can observe and control the 6 QSPI pins.
   // Note the button pulls the pin *low* when pressed.
-  bool button_state = (sio_hw->gpio_hi_in & (1u << CS_PIN_INDEX));
+
+  #ifdef __ARM_ARCH_6M__ // CM0 for rp2040
+    #define CS_BIT (1u << 1)
+  #else // rp2350 (cm33/risv)
+    #define CS_BIT SIO_GPIO_HI_IN_QSPI_CSN_BITS
+  #endif
+  bool button_state = (sio_hw->gpio_hi_in & CS_BIT);
 
   // Need to restore the state of chip select, else we are going to have a
   // bad time when we return to code in flash!
@@ -114,20 +153,58 @@ static stdio_driver_t stdio_rtt = {
   .in_chars = stdio_rtt_read
 };
 
-void stdio_rtt_init(void) {
+static void stdio_rtt_init(void) {
   stdio_set_driver_enabled(&stdio_rtt, true);
 }
 #endif
 
-//--------------------------------------------------------------------+
-//
-//--------------------------------------------------------------------+
+#if defined(TRACE_ETM) && defined(PICO_RP2350) && PICO_RP2350 == 1
+// ETM trace owns GP1-5 (GP1 = TRACECLK, GP2-5 = TRACEDATA0-3): muxing any of
+// them away - even briefly - gaps the trace clock/data and desyncs the probe.
+#define TRACE_PIN_CONFLICT(pin) ((pin) >= 1 && (pin) <= 5)
+// board_init() muxes UART_TX_PIN/UART_RX_PIN, which are defined whenever UART_DEV is
+#ifdef UART_DEV
+  #if TRACE_PIN_CONFLICT(UART_TX_PIN) || TRACE_PIN_CONFLICT(UART_RX_PIN)
+  #error "TRACE_ETM: UART TX/RX sits on a trace pin (GP1-5) - route the console elsewhere (pico2_etm_trace uses GP12/13)"
+  #endif
+#endif
+// stdio_init_all() muxes the sdk defaults even when the BSP console is elsewhere
+#if defined(LIB_PICO_STDIO_UART) && defined(PICO_DEFAULT_UART_TX_PIN) && \
+    (TRACE_PIN_CONFLICT(PICO_DEFAULT_UART_TX_PIN) || TRACE_PIN_CONFLICT(PICO_DEFAULT_UART_RX_PIN))
+  #error "TRACE_ETM: pico-sdk default UART (stdio_init_all) sits on a trace pin (GP1-5)"
+#endif
+#if defined(PICO_DEFAULT_I2C_SDA_PIN) && (TRACE_PIN_CONFLICT(PICO_DEFAULT_I2C_SDA_PIN) || TRACE_PIN_CONFLICT(PICO_DEFAULT_I2C_SCL_PIN))
+  // #pragma message, not #warning: examples build with -Werror, and this is
+  // only a hazard if the app actually uses i2c_default
+  #pragma message("TRACE_ETM: default I2C SDA/SCL sits on a trace pin (GP1-5) - using i2c_default will corrupt the trace stream (pico2_etm_trace routes I2C to GP8/9)")
+#endif
+
+// A debugger session leaves a core halted (Ozone captures halt at the end,
+// openocd halts both cores to flash), and TIMER's reset default pauses the
+// us-timer whenever EITHER core is debug-halted - J-Link's RP2350 script does
+// NOT clear it (verified: DBGPAUSE still reads 0x7, TIMERAWL frozen while
+// halted). tusb_time_millis_api()/sleep_ms() then spin forever and the board
+// looks dead, so free the timer for trace builds, which always run under a
+// probe.
+static void trace_etm_init(void) {
+  *(volatile uint32_t*) 0x400B002Cu = 0; // TIMER0 DBGPAUSE
+  *(volatile uint32_t*) 0x400B802Cu = 0; // TIMER1 DBGPAUSE
+}
+#else
+  #define trace_etm_init()
+#endif
 
 void board_init(void)
 {
-#if CFG_TUH_RPI_PIO_USB || CFG_TUD_RPI_PIO_USB
-  // Set the system clock to a multiple of 120mhz for bitbanging USB with pico-usb
-  set_sys_clock_khz(120000, true);
+  trace_etm_init();
+
+#if (CFG_TUH_ENABLED && CFG_TUH_RPI_PIO_USB) || (CFG_TUD_ENABLED && CFG_TUD_RPI_PIO_USB)
+  // rp2350 runs the pico-sdk stock 150 MHz (a runtime switch also truncates ETM
+  // capture). rp2040 keeps 120 MHz: soak-tested — the stock 125 MHz collapses
+  // PIO-USB bulk-OUT (device NAKs ~600:1, wire-measured, zero CRC errors).
+  #if !(defined(PICO_RP2350) && PICO_RP2350 == 1)
+  set_sys_clock_khz(120000, true); // rp2040 default is 125Mhz
+  #endif
 
 #ifdef PICO_DEFAULT_PIO_USB_VBUSEN_PIN
   gpio_init(PICO_DEFAULT_PIO_USB_VBUSEN_PIN);
@@ -138,7 +215,9 @@ void board_init(void)
   // rp2040 use pico-pio-usb for host tuh_configure() can be used to passed pio configuration to the host stack
   // Note: tuh_configure() must be called before tuh_init()
   pio_usb_configuration_t pio_cfg = PIO_USB_DEFAULT_CONFIG;
+#ifdef PICO_DEFAULT_PIO_USB_DP_PIN
   pio_cfg.pin_dp = PICO_DEFAULT_PIO_USB_DP_PIN;
+#endif
   tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
 #endif
 
@@ -153,8 +232,8 @@ void board_init(void)
 #endif
 
 #ifdef UART_DEV
-  bi_decl(bi_2pins_with_func(UART_TX_PIN, UART_RX_PIN, GPIO_FUNC_UART));
   uart_inst = uart_get_instance(UART_DEV);
+  bi_decl(bi_2pins_with_func(UART_TX_PIN, UART_RX_PIN, GPIO_FUNC_UART));
   stdio_uart_init_full(uart_inst, CFG_BOARD_UART_BAUDRATE, UART_TX_PIN, UART_RX_PIN);
 #endif
 
@@ -182,7 +261,6 @@ void board_init(void)
 //--------------------------------------------------------------------+
 // Board porting API
 //--------------------------------------------------------------------+
-
 void board_led_write(bool state) {
   (void) state;
 
@@ -204,7 +282,9 @@ size_t board_get_unique_id(uint8_t id[], size_t max_len) {
   pico_get_unique_board_id(&pico_id);
 
   size_t len = PICO_UNIQUE_BOARD_ID_SIZE_BYTES;
-  if (len > max_len) len = max_len;
+  if (len > max_len) {
+    len = max_len;
+  }
 
   memcpy(id, pico_id.id, len);
   return len;
@@ -213,7 +293,7 @@ size_t board_get_unique_id(uint8_t id[], size_t max_len) {
 int board_uart_read(uint8_t *buf, int len) {
 #ifdef UART_DEV
   int count = 0;
-  while ( (count < len) && uart_is_readable(uart_inst) ) {
+  while ((count < len) && uart_is_readable(uart_inst)) {
     buf[count] = uart_getc(uart_inst);
     count++;
   }
@@ -226,19 +306,47 @@ int board_uart_read(uint8_t *buf, int len) {
 
 int board_uart_write(void const *buf, int len) {
 #ifdef UART_DEV
-  char const *bufch = (char const *) buf;
-  for ( int i = 0; i < len; i++ ) {
-    uart_putc(uart_inst, bufch[i]);
+  const uint8_t *p = (const uint8_t *) buf;
+  int count = 0;
+  while (count < len && uart_is_writable(uart_inst)) {
+    uart_putc_raw(uart_inst, p[count]);
+    count++;
   }
-  return len;
+  return count;
 #else
   (void) buf; (void) len;
-  return 0;
+  return -1;
 #endif
 }
 
 int board_getchar(void) {
   return getchar_timeout_us(0);
+}
+
+int board_putchar(int c) {
+  return stdio_putchar(c);
+}
+
+void board_init_after_tusb(void) {
+  // nothing to do
+}
+
+//--------------------------------------------------------------------+
+// FreeRTOS hooks
+//--------------------------------------------------------------------+
+#if CFG_TUSB_OS == OPT_OS_FREERTOS
+#include "FreeRTOS.h"
+#include "task.h"
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
+  (void) xTask;
+  (void) pcTaskName;
+  panic("FreeRTOS stack overflow: %s", pcTaskName);
+}
+#endif
+
+void board_reset_to_bootloader(void) {
+  // not implemented
 }
 
 //--------------------------------------------------------------------+
@@ -253,7 +361,9 @@ int board_getchar(void) {
 #if CFG_TUH_ENABLED && defined(CFG_TUH_MAX3421) && CFG_TUH_MAX3421
 
 void max3421_int_handler(uint gpio, uint32_t event_mask) {
-  if (!(gpio == MAX3421_INTR_PIN && event_mask & GPIO_IRQ_EDGE_FALL)) return;
+  if (!(gpio == MAX3421_INTR_PIN && event_mask & GPIO_IRQ_EDGE_FALL)) {
+    return;
+  }
   tuh_int_handler(BOARD_TUH_RHPORT, true);
 }
 
@@ -274,7 +384,15 @@ static void max3421_init(void) {
   gpio_set_function(MAX3421_SCK_PIN, GPIO_FUNC_SPI);
   gpio_set_function(MAX3421_MOSI_PIN, GPIO_FUNC_SPI);
   gpio_set_function(MAX3421_MISO_PIN, GPIO_FUNC_SPI);
+
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference"
+#endif
   spi_set_format(MAX3421_SPI, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 }
 
 //// API to enable/disable MAX3421 INTR pin interrupt
@@ -305,7 +423,7 @@ bool tuh_max3421_spi_xfer_api(uint8_t rhport, uint8_t const* tx_buf, uint8_t* rx
   }else if (rx_buf == NULL) {
     ret = spi_write_blocking(MAX3421_SPI, tx_buf, xfer_bytes);
   }else {
-    ret = spi_write_read_blocking(spi0, tx_buf, rx_buf, xfer_bytes);
+    ret = spi_write_read_blocking(MAX3421_SPI, tx_buf, rx_buf, xfer_bytes);
   }
 
   return ret == (int) xfer_bytes;

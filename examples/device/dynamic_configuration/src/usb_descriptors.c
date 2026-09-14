@@ -26,15 +26,8 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 
-/* A combination of interfaces must have a unique product id, since PC will save device driver after the first plug.
- * Same VID/PID with different interface e.g MSC (first), then CDC (later) will possibly cause system error on PC.
- *
- * Auto ProductID layout's Bitmap:
- *   [MSB]         HID | MSC | CDC          [LSB]
- */
-#define _PID_MAP(itf, n)  ( (CFG_TUD_##itf) << (n) )
-#define USB_PID           (0x4000 | _PID_MAP(CDC, 0) | _PID_MAP(MSC, 1) | _PID_MAP(HID, 2) | \
-                           _PID_MAP(MIDI, 3) | _PID_MAP(VENDOR, 4) )
+// Unique PID per example: guarantees re-enumeration on re-flash and a fresh host driver match.
+#define USB_PID           0x400d
 
 // Configuration mode
 // 0 : enumerated as CDC/MIDI. Board button is not pressed when enumerating
@@ -79,7 +72,7 @@ tusb_desc_device_t const desc_device_1 =
 
     .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor           = 0xCafe,
-    .idProduct          = USB_PID + 11, // should be different PID than desc0
+    .idProduct          = USB_PID + 0x0100, // must differ from desc0's PID and stay outside the 0x40xx per-example space
     .bcdDevice          = 0x0100,
 
     .iManufacturer      = 0x01,
@@ -132,21 +125,8 @@ enum
   #define EPNUM_1_MSC_OUT     0x02
   #define EPNUM_1_MSC_IN      0x82
 
-#elif CFG_TUSB_MCU == OPT_MCU_SAMG
-  // SAMG doesn't support a same endpoint number with different direction IN and OUT
-  //    e.g EP1 OUT & EP1 IN cannot exist together
-  #define EPNUM_0_CDC_NOTIF   0x81
-  #define EPNUM_0_CDC_OUT     0x02
-  #define EPNUM_0_CDC_IN      0x83
-
-  #define EPNUM_0_MIDI_OUT    0x04
-  #define EPNUM_0_MIDI_IN     0x85
-
-  #define EPNUM_1_MSC_OUT     0x01
-  #define EPNUM_1_MSC_IN      0x82
-
-#elif CFG_TUSB_MCU == OPT_MCU_FT90X || CFG_TUSB_MCU == OPT_MCU_FT93X
-  // FT9XX doesn't support a same endpoint number with different direction IN and OUT
+#elif CFG_TUD_ENDPOINT_ONE_DIRECTION_ONLY
+  // MCUs that don't support a same endpoint number with different direction IN and OUT defined in tusb_mcu.h
   //    e.g EP1 OUT & EP1 IN cannot exist together
   #define EPNUM_0_CDC_NOTIF   0x81
   #define EPNUM_0_CDC_OUT     0x02
@@ -215,7 +195,7 @@ enum {
 };
 
 // array of pointer to string descriptors
-char const *string_desc_arr[] =
+static char const *string_desc_arr[] =
 {
   (const char[]) { 0x09, 0x04 }, // 0: is supported language is English (0x0409)
   "TinyUSB",                     // 1: Manufacturer
@@ -245,14 +225,18 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
       // Note: the 0xEE index string is a Microsoft OS 1.0 Descriptors.
       // https://docs.microsoft.com/en-us/windows-hardware/drivers/usbcon/microsoft-defined-usb-descriptors
 
-      if ( !(index < sizeof(string_desc_arr) / sizeof(string_desc_arr[0])) ) return NULL;
+      if (!(index < sizeof(string_desc_arr) / sizeof(string_desc_arr[0]))) {
+        return NULL;
+      }
 
       const char *str = string_desc_arr[index];
 
       // Cap at max char
       chr_count = strlen(str);
       size_t const max_count = sizeof(_desc_str) / sizeof(_desc_str[0]) - 1; // -1 for string type
-      if ( chr_count > max_count ) chr_count = max_count;
+      if (chr_count > max_count) {
+        chr_count = max_count;
+      }
 
       // Convert ASCII string into UTF-16
       for ( size_t i = 0; i < chr_count; i++ ) {

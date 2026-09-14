@@ -1,27 +1,8 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2021 Koji KITAYAMA
- * Copyright (c) 2021 Tian Yunhao (t123yh)
- * Copyright (c) 2021 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2021 Koji Kitayama
+ * SPDX-FileCopyrightText: Copyright (c) 2021 Tian Yunhao (t123yh)
+ * SPDX-FileCopyrightText: Copyright (c) 2021 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -35,9 +16,6 @@
 #include <f1c100s-irq.h>
 #include <device/dcd.h>
 #include "musb_def.h"
-
-//#include "bsp/board_api.h"
-extern uint32_t board_millis(void); // TODO remove
 
 typedef uint32_t u32;
 typedef uint16_t u16;
@@ -99,22 +77,12 @@ static void usb_phy_write(int addr, int data, int len)
 	}
 }
 
-static void delay_ms(uint32_t ms)
-{
-#if CFG_TUSB_OS == OPT_OS_NONE
-  int now = board_millis();
-  while (board_millis() - now <= ms) asm("nop");
-#else
-  osal_task_delay(ms);
-#endif
-}
-
 static void USBC_HardwareReset(void)
 {
   // Reset phy and controller
   USBC_REG_set_bit_l(USBPHY_CLK_RST_BIT, USBPHY_CLK_REG);
 	USBC_REG_set_bit_l(BUS_RST_USB_BIT, BUS_CLK_RST_REG);
-  delay_ms(2);
+  tusb_time_delay_ms_api(2);
 
 	USBC_REG_set_bit_l(USBPHY_CLK_GAT_BIT, USBPHY_CLK_REG);
   USBC_REG_set_bit_l(USBPHY_CLK_RST_BIT, USBPHY_CLK_REG);
@@ -186,7 +154,7 @@ static void USBC_ForceVbusValidToHigh(void)
 	USBC_Writel(reg_val, USBC_REG_ISCR(USBC0_BASE));
 }
 
-void USBC_SelectBus(u32 io_type, u32 ep_type, u32 ep_index)
+static void USBC_SelectBus(u32 io_type, u32 ep_type, u32 ep_index)
 {
 	u32 reg_val = 0;
 
@@ -545,12 +513,12 @@ static void pipe_read_write_packet_ff(tu_fifo_t *f, volatile void *fifo, unsigne
   tu_fifo_buffer_info_t info;
   ops[dir].tu_fifo_get_info(f, &info);
   unsigned total_len = len;
-  len = TU_MIN(total_len, info.len_lin);
-  ops[dir].pipe_read_write(info.ptr_lin, fifo, len);
+  len = TU_MIN(total_len, info.linear.len);
+  ops[dir].pipe_read_write(info.linear.ptr, fifo, len);
   unsigned rem = total_len - len;
   if (rem) {
-    len = TU_MIN(rem, info.len_wrap);
-    ops[dir].pipe_read_write(info.ptr_wrap, fifo, len);
+    len = TU_MIN(rem, info.wrapped.len);
+    ops[dir].pipe_read_write(info.wrapped.ptr, fifo, len);
     rem -= len;
   }
   ops[dir].tu_fifo_advance(f, total_len - rem);
@@ -867,8 +835,9 @@ static void usb_isr_handler(void) {
 	dcd_int_handler(0);
 }
 
-void dcd_init(uint8_t rhport)
-{
+bool dcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
+  (void) rh_init;
+
   dcd_disconnect(rhport);
   USBC_HardwareReset();
   USBC_PhyConfig();
@@ -895,6 +864,8 @@ void dcd_init(uint8_t rhport)
   f1c100s_intc_set_isr(F1C100S_IRQ_USBOTG, usb_isr_handler);
 
   dcd_connect(rhport);
+
+  return true;
 }
 
 // Connect by enabling internal pull-up resistor on D+/D-
@@ -959,7 +930,7 @@ void dcd_remote_wakeup(uint8_t rhport)
 {
   (void)rhport;
   USBC_REG_set_bit_b(USBC_BP_POWER_D_RESUME, USBC_REG_PCTL(USBC0_BASE));
-  delay_ms(10);
+  tusb_time_delay_ms_api(10);
   USBC_REG_clear_bit_b(USBC_BP_POWER_D_RESUME, USBC_REG_PCTL(USBC0_BASE));
 }
 
@@ -1089,9 +1060,25 @@ void dcd_edpt_close(uint8_t rhport, uint8_t ep_addr)
   musb_int_unmask();
 }
 
+  #if 0
+bool dcd_edpt_iso_alloc(uint8_t rhport, uint8_t ep_addr, uint16_t largest_packet_size) {
+  (void)rhport;
+  (void)ep_addr;
+  (void)largest_packet_size;
+  return false;
+}
+
+bool dcd_edpt_iso_activate(uint8_t rhport, const tusb_desc_endpoint_t *desc_ep) {
+  (void)rhport;
+  (void)desc_ep;
+  return false;
+}
+  #endif
+
 // Submit a transfer, When complete dcd_event_xfer_complete() is invoked to notify the stack
-bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes)
+bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes, bool is_isr)
 {
+  (void) is_isr;
   (void)rhport;
   bool ret;
   // TU_LOG1("X %x %d\r\n", ep_addr, total_bytes);
@@ -1109,8 +1096,9 @@ bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t t
 }
 
 // Submit a transfer where is managed by FIFO, When complete dcd_event_xfer_complete() is invoked to notify the stack - optional, however, must be listed in usbd.c
-bool dcd_edpt_xfer_fifo(uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes)
+bool dcd_edpt_xfer_fifo(uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes, bool is_isr)
 {
+  (void) is_isr;
   (void)rhport;
   bool ret;
   // TU_LOG1("X %x %d\r\n", ep_addr, total_bytes);
@@ -1217,5 +1205,4 @@ void dcd_int_handler(uint8_t rhport)
     rxis &= ~TU_BIT(num);
   }
 }
-
 #endif

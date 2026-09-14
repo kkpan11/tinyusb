@@ -53,7 +53,7 @@ void usb_device_task(void *param);
 void video_task(void* param);
 
 #if CFG_TUSB_OS == OPT_OS_FREERTOS
-void freertos_init_task(void);
+void freertos_init(void);
 #endif
 
 
@@ -65,14 +65,16 @@ int main(void) {
 
   // If using FreeRTOS: create blinky, tinyusb device, video task
 #if CFG_TUSB_OS == OPT_OS_FREERTOS
-  freertos_init_task();
+  freertos_init();
 #else
   // init device stack on configured roothub port
-  tud_init(BOARD_TUD_RHPORT);
+  tusb_rhport_init_t dev_init = {
+    .role = TUSB_ROLE_DEVICE,
+    .speed = TUSB_SPEED_AUTO
+  };
+  tusb_init(BOARD_TUD_RHPORT, &dev_init);
 
-  if (board_init_after_tusb) {
-    board_init_after_tusb();
-  }
+  board_init_after_tusb();
 
   while (1) {
     tud_task(); // tinyusb device task
@@ -178,7 +180,7 @@ static void fill_color_bar(uint8_t* buffer, unsigned start_position) {
 }
 #endif
 
-size_t get_framebuf(uint_fast8_t ctl_idx, uint_fast8_t stm_idx, size_t fnum, void **fb) {
+static size_t get_framebuf(uint_fast8_t ctl_idx, uint_fast8_t stm_idx, size_t fnum, void **fb) {
   uint32_t idx = ctl_idx + stm_idx;
 
   if (idx == 0) {
@@ -203,8 +205,7 @@ size_t get_framebuf(uint_fast8_t ctl_idx, uint_fast8_t stm_idx, size_t fnum, voi
 //--------------------------------------------------------------------+
 //
 //--------------------------------------------------------------------+
-
-void video_send_frame(uint_fast8_t ctl_idx, uint_fast8_t stm_idx) {
+static void video_send_frame(uint_fast8_t ctl_idx, uint_fast8_t stm_idx) {
   static unsigned start_ms[CFG_TUD_VIDEO_STREAMING] = {0, };
   static unsigned already_sent = 0;
 
@@ -220,13 +221,13 @@ void video_send_frame(uint_fast8_t ctl_idx, uint_fast8_t stm_idx) {
   if (!(already_sent & (1u << idx))) {
     already_sent |= 1u << idx;
     tx_busy |= 1u << idx;
-    start_ms[idx] = board_millis();
+    start_ms[idx] = tusb_time_millis_api();
 
     fb_size = get_framebuf(ctl_idx, stm_idx, frame_num[idx], &fp);
     tud_video_n_frame_xfer(ctl_idx, stm_idx, fp, fb_size);
   }
 
-  unsigned cur = board_millis();
+  unsigned cur = tusb_time_millis_api();
   if (cur - start_ms[idx] < interval_ms[idx]) return; // not enough time
   if (tx_busy & (1u << idx)) return;
   start_ms[idx] += interval_ms[idx];
@@ -279,7 +280,7 @@ void led_blinking_task(void* param) {
     #if CFG_TUSB_OS == OPT_OS_FREERTOS
     vTaskDelay(blink_interval_ms / portTICK_PERIOD_MS);
     #else
-    if (board_millis() - start_ms < blink_interval_ms) return; // not enough time
+    if (tusb_time_millis_api() - start_ms < blink_interval_ms) return; // not enough time
     #endif
 
     start_ms += blink_interval_ms;
@@ -296,7 +297,7 @@ void led_blinking_task(void* param) {
 #define BLINKY_STACK_SIZE   configMINIMAL_STACK_SIZE
 #define VIDEO_STACK_SIZE    (configMINIMAL_STACK_SIZE*4)
 
-#if TUP_MCU_ESPRESSIF
+#ifdef ESP_PLATFORM
   #define USBD_STACK_SIZE     4096
   int main(void);
   void app_main(void) {
@@ -327,11 +328,13 @@ void usb_device_task(void *param) {
   // init device stack on configured roothub port
   // This should be called after scheduler/kernel is started.
   // Otherwise, it could cause kernel issue since USB IRQ handler does use RTOS queue API.
-  tud_init(BOARD_TUD_RHPORT);
+  tusb_rhport_init_t dev_init = {
+    .role = TUSB_ROLE_DEVICE,
+    .speed = TUSB_SPEED_AUTO
+  };
+  tusb_init(BOARD_TUD_RHPORT, &dev_init);
 
-  if (board_init_after_tusb) {
-    board_init_after_tusb();
-  }
+  board_init_after_tusb();
 
   // RTOS forever loop
   while (1) {
@@ -340,7 +343,7 @@ void usb_device_task(void *param) {
   }
 }
 
-void freertos_init_task(void) {
+void freertos_init(void) {
   #if configSUPPORT_STATIC_ALLOCATION
   xTaskCreateStatic(led_blinking_task, "blinky", BLINKY_STACK_SIZE, NULL, 1, blinky_stack, &blinky_taskdef);
   xTaskCreateStatic(usb_device_task, "usbd", USBD_STACK_SIZE, NULL, configMAX_PRIORITIES-1, usb_device_stack, &usb_device_taskdef);
@@ -348,11 +351,11 @@ void freertos_init_task(void) {
   #else
   xTaskCreate(led_blinking_task, "blinky", BLINKY_STACK_SIZE, NULL, 1, NULL);
   xTaskCreate(usb_device_task, "usbd", USBD_STACK_SIZE, NULL, configMAX_PRIORITIES - 1, NULL);
-  xTaskCreate(video_task, "video", VIDEO_STACK_SZIE, NULL, configMAX_PRIORITIES - 2, NULL);
+  xTaskCreate(video_task, "video", VIDEO_STACK_SIZE, NULL, configMAX_PRIORITIES - 2, NULL);
   #endif
 
-  // skip starting scheduler (and return) for ESP32-S2 or ESP32-S3
-  #if !TUP_MCU_ESPRESSIF
+  // only start scheduler for non-espressif mcu
+  #ifndef ESP_PLATFORM
   vTaskStartScheduler();
   #endif
 }

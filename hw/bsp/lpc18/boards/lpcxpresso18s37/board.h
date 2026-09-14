@@ -24,6 +24,11 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   name: LPCXpresso18s37
+   url: https://www.nxp.com/design/design-center/software/development-software/mcuxpresso-software-and-tools-/lpcxpresso-boards/lpcxpresso18s37-development-board:OM13076
+*/
+
 #ifndef BOARD_H_
 #define BOARD_H_
 
@@ -70,6 +75,12 @@ static inline void board_lpc18_pinmux(void)
 
   Chip_SCU_SetPinMuxing(pinmuxing, sizeof(pinmuxing) / sizeof(PINMUX_GRP_T));
 }
+
+
+// TRACE_ETM builds: no trace header is wired out on the LPCXpresso18S37 -
+// provide the no-op the family init expects (see mcb1800/ea4357 for a
+// board that routes the trace pins)
+static inline void board_trace_pinmux(void) {}
 
 #ifdef __cplusplus
  }

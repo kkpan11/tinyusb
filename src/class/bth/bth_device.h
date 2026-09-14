@@ -1,31 +1,13 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2020 Jerzy Kasenberg
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2020 Jerzy Kasenberg
+ * SPDX-FileCopyrightText: Copyright (c) 2020 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
 
-#ifndef _TUSB_BTH_DEVICE_H_
-#define _TUSB_BTH_DEVICE_H_
+#ifndef TUSB_BTH_DEVICE_H_
+#define TUSB_BTH_DEVICE_H_
 
 #include <common/tusb_common.h>
 #include <device/usbd.h>
@@ -67,23 +49,23 @@ typedef struct TU_ATTR_PACKED
 // Part E, 5.4.1.
 // Length of the command is from 3 bytes (2 bytes for OpCode,
 // 1 byte for parameter total length) to 258.
-TU_ATTR_WEAK void tud_bt_hci_cmd_cb(void *hci_cmd, size_t cmd_len);
+void tud_bt_hci_cmd_cb(void *hci_cmd, size_t cmd_len);
 
 // Invoked when ACL data was received over USB from Bluetooth host.
 // Detailed format is described in Bluetooth core specification Vol 2,
 // Part E, 5.4.2.
 // Length is from 4 bytes, (12 bits for Handle, 4 bits for flags
 // and 16 bits for data total length) to endpoint size.
-TU_ATTR_WEAK void tud_bt_acl_data_received_cb(void *acl_data, uint16_t data_len);
+void tud_bt_acl_data_received_cb(void *acl_data, uint16_t data_len);
 
 // Called when event sent with tud_bt_event_send() was delivered to BT stack.
 // Controller can release/reuse buffer with Event packet at this point.
-TU_ATTR_WEAK void tud_bt_event_sent_cb(uint16_t sent_bytes);
+void tud_bt_event_sent_cb(uint16_t sent_bytes);
 
 // Called when ACL data that was sent with tud_bt_acl_data_send()
 // was delivered to BT stack.
 // Controller can release/reuse buffer with ACL packet at this point.
-TU_ATTR_WEAK void tud_bt_acl_data_sent_cb(uint16_t sent_bytes);
+void tud_bt_acl_data_sent_cb(uint16_t sent_bytes);
 
 // Bluetooth controller calls this function when it wants to send even packet
 // as described in Bluetooth core specification Vol 2, Part E, 5.4.4.
@@ -114,4 +96,4 @@ bool     btd_xfer_cb         (uint8_t rhport, uint8_t edpt_addr, xfer_result_t r
  }
 #endif
 
-#endif /* _TUSB_BTH_DEVICE_H_ */
+#endif /* TUSB_BTH_DEVICE_H_ */

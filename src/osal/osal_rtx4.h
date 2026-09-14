@@ -1,26 +1,7 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2021 Tian Yunhao (t123yh)
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2021 Tian Yunhao (t123yh)
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -37,6 +18,12 @@ extern "C" {
 //--------------------------------------------------------------------+
 // TASK API
 //--------------------------------------------------------------------+
+typedef OS_TID osal_task_handle_t;
+
+TU_ATTR_ALWAYS_INLINE static inline osal_task_handle_t osal_task_get_current_handle(void) {
+  return os_tsk_self();
+}
+
 TU_ATTR_ALWAYS_INLINE static inline void osal_task_delay(uint32_t msec) {
   uint16_t hi = msec >> 16;
   uint16_t lo = msec;
@@ -44,6 +31,10 @@ TU_ATTR_ALWAYS_INLINE static inline void osal_task_delay(uint32_t msec) {
     os_dly_wait(0xFFFE);
   }
   os_dly_wait(lo);
+}
+
+TU_ATTR_ALWAYS_INLINE static inline uint32_t osal_time_millis(void) {
+  return os_time_get();
 }
 
 TU_ATTR_ALWAYS_INLINE static inline uint16_t msec2wait(uint32_t msec) {
@@ -54,6 +45,29 @@ TU_ATTR_ALWAYS_INLINE static inline uint16_t msec2wait(uint32_t msec) {
   } else {
     return msec;
   }
+}
+
+//--------------------------------------------------------------------+
+// Spinlock API, stub not implemented
+//--------------------------------------------------------------------+
+typedef uint8_t osal_spinlock_t;
+#define OSAL_SPINLOCK_DEF(_name, _int_set) \
+  osal_spinlock_t _name
+
+TU_ATTR_ALWAYS_INLINE static inline void osal_spin_init(osal_spinlock_t *ctx) {
+  (void) ctx;
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void osal_spin_deinit(osal_spinlock_t *ctx) {
+  (void) ctx;
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void osal_spin_lock(osal_spinlock_t *ctx, bool in_isr) {
+  (void) ctx; (void) in_isr;
+}
+
+TU_ATTR_ALWAYS_INLINE static inline void osal_spin_unlock(osal_spinlock_t *ctx, bool in_isr) {
+  (void) ctx; (void) in_isr;
 }
 
 //--------------------------------------------------------------------+

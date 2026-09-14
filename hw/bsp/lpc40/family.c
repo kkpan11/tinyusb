@@ -24,6 +24,10 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   manufacturer: NXP
+*/
+
 #include "chip.h"
 #include "bsp/board_api.h"
 #include "board.h"
@@ -85,6 +89,8 @@ void board_init(void) {
   // 1ms tick timer
   SysTick_Config(SystemCoreClock / 1000);
 #elif CFG_TUSB_OS == OPT_OS_FREERTOS
+  // Explicitly disable systick to prevent its ISR from running before scheduler start
+  SysTick->CTRL &= ~1U;
   // If freeRTOS is used, IRQ priority is limit by max syscall ( smaller is higher )
   NVIC_SetPriority(USB_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
 #endif
@@ -115,6 +121,11 @@ void board_init(void) {
 
   // set portfunc: USB1 = host, USB2 = device
   LPC_USB->StCtrl = 0x3;
+
+  // VBUS on the USB1 host connector, see the P1.19 note in board.h. Driven either way:
+  // left as an input it would float the switch enable in a device-only build.
+  Chip_GPIO_SetPinState(LPC_GPIO, 1, 19, CFG_TUH_ENABLED);
+  Chip_GPIO_SetPinDIROutput(LPC_GPIO, 1, 19);
 }
 
 //--------------------------------------------------------------------+
@@ -129,18 +140,31 @@ uint32_t board_button_read(void) {
   return BUTTON_ACTIV_STATE == Chip_GPIO_GetPinState(LPC_GPIO, BUTTON_PORT, BUTTON_PIN);
 }
 
+size_t board_get_unique_id(uint8_t id[], size_t max_len) {
+  // IAP ReadUID (cmd 58) returns status + 4 words = full 128-bit UID
+  // (lpcopen's Chip_IAP_ReadUID() only returns the first word)
+  unsigned int command[5] = { IAP_READ_UID_CMD, 0, 0, 0, 0 };
+  unsigned int result[5];
+  iap_entry(command, result);
+  TU_ASSERT(result[0] == IAP_CMD_SUCCESS, 0);
+
+  size_t const len = tu_min32(max_len, 16);
+  memcpy(id, &result[1], len);
+  return len;
+}
+
 int board_uart_read(uint8_t *buf, int len) {
   //return UART_ReceiveByte(BOARD_UART_PORT);
   (void) buf;
   (void) len;
-  return 0;
+  return -1;
 }
 
 int board_uart_write(void const *buf, int len) {
   //UART_Send(BOARD_UART_PORT, &c, 1, BLOCKING);
   (void) buf;
   (void) len;
-  return 0;
+  return -1;
 }
 
 #if CFG_TUSB_OS == OPT_OS_NONE
@@ -150,7 +174,7 @@ void SysTick_Handler(void) {
   system_ticks++;
 }
 
-uint32_t board_millis(void) {
+uint32_t tusb_time_millis_api(void) {
   return system_ticks;
 }
 

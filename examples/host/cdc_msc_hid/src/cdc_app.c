@@ -26,13 +26,15 @@
 
 #include "tusb.h"
 #include "bsp/board_api.h"
+#include "app.h"
 
-size_t get_console_inputs(uint8_t* buf, size_t bufsize) {
+static size_t console_read(uint8_t *buf, size_t bufsize) {
   size_t count = 0;
   while (count < bufsize) {
-    int ch = board_getchar();
-    if (ch <= 0) break;
-
+    const int ch = board_getchar();
+    if (ch < 0) {
+      break;
+    }
     buf[count] = (uint8_t) ch;
     count++;
   }
@@ -40,40 +42,74 @@ size_t get_console_inputs(uint8_t* buf, size_t bufsize) {
   return count;
 }
 
+// Give up forwarding to the console after this long without progress. Not every board's
+// board_uart_write() reports "no console here" the same way, so the loop below cannot rely
+// on the return value alone to know when to stop.
+enum { CONSOLE_STALL_MS = 10 };
+
+// Returns bytes written, 0 if the console cannot take them right now, negative if this
+// board has no console at all.
+static int console_write(const uint8_t *buf, size_t bufsize) {
+#if defined(LOGGER_RTT)
+  // The console is the debug probe, not a UART: board_uart_write() is a stub on those
+  // boards. NO_BLOCK_SKIP writes all or nothing, so 0 means the probe has not drained the
+  // up-buffer yet.
+  return (int) SEGGER_RTT_Write(0, buf, (unsigned) bufsize);
+#else
+  // Use board_uart_write directly for non-blocking behavior.
+  // board_putchar -> sys_write has a blocking retry loop that causes UART RX overrun.
+  return board_uart_write(buf, (int) bufsize);
+#endif
+}
+
+// forward from console to usbh
+static void console_to_usbh(uint8_t idx) {
+  uint8_t buf[64];
+  size_t  count = console_read(buf, sizeof(buf));
+  if (count > 0) {
+    tuh_cdc_write(idx, buf, count);
+  }
+}
+
 void cdc_app_task(void) {
-  uint8_t buf[64 + 1]; // +1 for extra null character
-  uint32_t const bufsize = sizeof(buf) - 1;
+  const uint8_t idx = 0;
 
-  uint32_t count = get_console_inputs(buf, bufsize);
-  buf[count] = 0;
+  // Bidirectional forwarding: console <-> host cdc interfaces
+  if (!tuh_cdc_mounted(idx)) {
+    return;
+  }
 
-  // loop over all mounted interfaces
-  for (uint8_t idx = 0; idx < CFG_TUH_CDC; idx++) {
-    if (tuh_cdc_mounted(idx)) {
-      // console --> cdc interfaces
-      if (count) {
-        tuh_cdc_write(idx, buf, count);
-        tuh_cdc_write_flush(idx);
+  // usbh -> uart
+  uint8_t  buf[64];
+  uint32_t count = tuh_cdc_read(idx, buf, sizeof(buf));
+  uint32_t wr    = 0;
+  uint32_t progress_ms = tusb_time_millis_api();
+
+  do {
+    // console write is slow, while waiting forward console -> usbh else its rx can overflow
+    if (count) {
+      const int written = console_write(buf + wr, count - wr);
+      if (written < 0) {
+        break; // no console on this board at all
+      }
+      if (written > 0) {
+        wr += (uint32_t) written;
+        progress_ms = tusb_time_millis_api();
+      } else if (tusb_time_millis_api() - progress_ms > CONSOLE_STALL_MS) {
+        // a TX FIFO or an RTT up-buffer is only ever transiently full: nothing draining it
+        // must not stall the host task, so drop the rest
+        break;
       }
     }
-  }
+    console_to_usbh(idx);
+  } while (wr < count);
+
+  tuh_cdc_write_flush(idx);
 }
 
 //--------------------------------------------------------------------+
 // TinyUSB callbacks
 //--------------------------------------------------------------------+
-
-// Invoked when received new data
-void tuh_cdc_rx_cb(uint8_t idx) {
-  uint8_t buf[64 + 1]; // +1 for extra null character
-  uint32_t const bufsize = sizeof(buf) - 1;
-
-  // forward cdc interfaces -> console
-  uint32_t count = tuh_cdc_read(idx, buf, bufsize);
-  buf[count] = 0;
-
-  printf("%s", (char*) buf);
-}
 
 // Invoked when a device with CDC interface is mounted
 // idx is index of cdc interface in the internal pool.
@@ -84,19 +120,13 @@ void tuh_cdc_mount_cb(uint8_t idx) {
   printf("CDC Interface is mounted: address = %u, itf_num = %u\r\n", itf_info.daddr,
          itf_info.desc.bInterfaceNumber);
 
-#ifdef CFG_TUH_CDC_LINE_CODING_ON_ENUM
   // If CFG_TUH_CDC_LINE_CODING_ON_ENUM is defined, line coding will be set by tinyusb stack
   // while eneumerating new cdc device
   cdc_line_coding_t line_coding = {0};
-  if (tuh_cdc_get_local_line_coding(idx, &line_coding)) {
+  if (tuh_cdc_get_line_coding_local(idx, &line_coding)) {
     printf("  Baudrate: %" PRIu32 ", Stop Bits : %u\r\n", line_coding.bit_rate, line_coding.stop_bits);
     printf("  Parity  : %u, Data Width: %u\r\n", line_coding.parity, line_coding.data_bits);
   }
-#else
-  // Set Line Coding upon mounted
-  cdc_line_coding_t new_line_coding = { 115200, CDC_LINE_CODING_STOP_BITS_1, CDC_LINE_CODING_PARITY_NONE, 8 };
-  tuh_cdc_set_line_coding(idx, &new_line_coding, NULL, 0);
-#endif
 }
 
 // Invoked when a device with CDC interface is unmounted

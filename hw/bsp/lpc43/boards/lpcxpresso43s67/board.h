@@ -24,6 +24,11 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   name: LPCXpresso43S67
+   url: https://www.nxp.com/design/design-center/software/development-software/mcuxpresso-software-and-tools-/lpcxpresso-boards/lpcxpresso43s67-development-board:OM13084
+*/
+
 #ifndef _BOARD_LPCXPRESSO43S67_H_
 #define _BOARD_LPCXPRESSO43S67_H_
 
@@ -65,6 +70,12 @@ static const PINMUX_GRP_T pinmuxing[] = {
     //{ 0x2, 5, SCU_MODE_INACT  | SCU_MODE_INBUFF_EN | SCU_MODE_ZIF_DIS | SCU_MODE_FUNC2 }, // P2_5 USB1_VBUS, MUST CONFIGURE THIS SIGNAL FOR USB1 NORMAL OPERATION
     {0x2, 5, SCU_MODE_INBUFF_EN | SCU_MODE_PULLUP | SCU_MODE_FUNC4 },
 };
+
+
+// TRACE_ETM builds: no trace header is wired out on the LPCXpresso43S67 -
+// provide the no-op the family init expects (see mcb1800/ea4357 for a
+// board that routes the trace pins)
+static inline void board_trace_pinmux(void) {}
 
 #ifdef __cplusplus
  }

@@ -24,6 +24,10 @@
  * This file is part of the TinyUSB stack.
  */
 
+/* metadata:
+   manufacturer: NXP
+*/
+
 #ifdef __GNUC__
   #pragma GCC diagnostic push
   #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -37,6 +41,10 @@
 
 #include "bsp/board_api.h"
 #include "board.h"
+
+extern void USB_IRQHandler(void);
+extern void SysTick_Handler(void);
+void SystemInit(void);
 
 //--------------------------------------------------------------------+
 // Forward USB interrupt events to TinyUSB IRQ Handler
@@ -66,6 +74,8 @@ void board_init(void) {
   // 1ms tick timer
   SysTick_Config(SystemCoreClock / 1000);
 #elif CFG_TUSB_OS == OPT_OS_FREERTOS
+  // Explicitly disable systick to prevent its ISR from running before scheduler start
+  SysTick->CTRL &= ~1U;
   // If freeRTOS is used, IRQ priority is limit by max syscall ( smaller is higher )
   NVIC_SetPriority(USB0_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY );
 #endif
@@ -90,6 +100,13 @@ void board_led_write(bool state) {
   Chip_GPIO_SetPinState(LPC_GPIO, LED_PORT, LED_PIN, state ? LED_STATE_ON : (1 - LED_STATE_ON));
 }
 
+size_t board_get_unique_id(uint8_t id[], size_t max_len) {
+  if ( max_len < 16 ) return 0;
+  uint32_t* id32 = (uint32_t*) (uintptr_t) id;
+  id32[0] = Chip_IAP_ReadUID();
+  return 4;
+}
+
 uint32_t board_button_read(void) {
   return BUTTON_STATE_ACTIVE == Chip_GPIO_GetPinState(LPC_GPIO, BUTTON_PORT, BUTTON_PIN);
 }
@@ -97,13 +114,13 @@ uint32_t board_button_read(void) {
 int board_uart_read(uint8_t* buf, int len) {
   (void) buf;
   (void) len;
-  return 0;
+  return -1;
 }
 
 int board_uart_write(void const* buf, int len) {
   (void) buf;
   (void) len;
-  return 0;
+  return -1;
 }
 
 #if CFG_TUSB_OS == OPT_OS_NONE
@@ -113,7 +130,7 @@ void SysTick_Handler(void) {
   system_ticks++;
 }
 
-uint32_t board_millis(void) {
+uint32_t tusb_time_millis_api(void) {
   return system_ticks;
 }
 
